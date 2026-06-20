@@ -270,9 +270,15 @@ with tab_overview:
     st.divider()
     news_date_label = news.recent_news_date_label()
     st.subheader(f"{primary_label} 相關新聞（{news_date_label}）")
-    company_name = (
-        fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
-    )
+    # TW tickers: prefer the curated Chinese name for the news query — yfinance's
+    # "shortName" comes back in English for TWSE tickers (see _display_name),
+    # and an English company name paired with a zh-TW Google News search
+    # routinely returns zero matches.
+    company_name = universe.get_tw_company_name(primary) if is_tw else None
+    if not company_name:
+        company_name = (
+            fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
+        )
     news_items = news.get_recent_news(primary, company_name)
     if not news_items:
         st.info(f"暫無 {news_date_label} 的相關中文新聞。")
@@ -499,10 +505,10 @@ with tab_fcn:
             coupon_rate = st.number_input("年化收益率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5, key="fcn_coupon") / 100
         with col_ki_style:
             ki_style_label = st.radio(
-                "KI 觀察方式", ["到期觀察（歐式，較常見）", "每日觀察（美式，較嚴格）"],
+                "KI 觀察方式", ["到期日觀察（歐式，較常見）", "每日觀察（美式，較嚴格）"],
                 key="fcn_ki_style",
             )
-            ki_style = "maturity" if ki_style_label.startswith("到期觀察") else "continuous"
+            ki_style = "maturity" if ki_style_label.startswith("到期日觀察") else "continuous"
 
         if ki_pct > strike_pct:
             st.warning("下限價 KI 通常不應高於執行價 STRIKE，請確認條款設定是否正確。")
