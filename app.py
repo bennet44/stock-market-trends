@@ -39,9 +39,15 @@ PRICE_TARGET_HORIZONS = {
 
 def _display_name(ticker: str) -> str:
     """Return "TICKER(公司名稱)", falling back to the bare ticker if the
-    name is unavailable (e.g. offline or an unrecognized symbol)."""
-    info = dl.get_company_info(ticker)
-    name = info.get("shortName")
+    name is unavailable (e.g. offline or an unrecognized symbol).
+
+    TW tickers use the curated Chinese name (Yahoo's "shortName" for TWSE
+    tickers comes back in English); US tickers keep the English shortName.
+    """
+    name = universe.get_tw_company_name(ticker) if ticker.endswith((".TW", ".TWO")) else None
+    if not name:
+        info = dl.get_company_info(ticker)
+        name = info.get("shortName")
     return f"{ticker}({name})" if name else ticker
 
 

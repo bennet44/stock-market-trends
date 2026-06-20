@@ -81,6 +81,37 @@ _TW_ETF_CODES = [
 _TW_STOCK_TICKERS = [f"{c}.TW" for c in _TW_STOCK_CODES]
 _TW_ETF_TICKERS = [f"{c}.TW" for c in _TW_ETF_CODES]
 
+# Traditional-Chinese names for the curated codes above. Yahoo Finance's
+# "shortName" for TWSE tickers comes back in English (e.g. "Taiwan
+# Semiconductor Mfg"), so the curated lists carry their own Chinese names.
+_TW_NAMES = {
+    "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2412": "中華電",
+    "2882": "國泰金", "2881": "富邦金", "1301": "台塑", "2308": "台達電",
+    "2303": "聯電", "2002": "中鋼", "3008": "大立光", "2891": "中信金",
+    "2884": "玉山金", "2885": "元大金", "1216": "統一", "2207": "和泰車",
+    "2603": "長榮", "2609": "陽明", "2615": "萬海", "3034": "聯詠",
+    "3037": "欣興", "3711": "日月光投控", "2379": "瑞昱", "6505": "台塑化",
+    "5871": "中租-KY", "2890": "永豐金", "2880": "華南金", "1303": "南亞",
+    "1101": "台泥", "9910": "豐泰", "2912": "統一超", "4904": "遠傳",
+    "3045": "台灣大", "2357": "華碩", "2356": "英業達", "2382": "廣達",
+    "2395": "研華", "6669": "緯穎", "3661": "世芯-KY", "6446": "藥華藥",
+    "0050": "元大台灣50", "0056": "元大高股息", "006208": "富邦台50",
+    "00878": "國泰永續高股息", "00919": "群益台灣精選高息",
+    "00929": "復華台灣科技優息", "00940": "元大台灣價值高息",
+    "00713": "元大台灣高息低波", "00692": "富邦公司治理",
+    "00701": "國泰股息精選30", "00733": "富邦臺灣中小",
+    "00850": "元大臺灣ESG永續", "00891": "中信關鍵半導體",
+    "00900": "富邦特選高股息30", "00905": "FT臺灣Smart",
+    "00961": "中信成長高股息",
+}
+
+
+def get_tw_company_name(ticker: str) -> str | None:
+    """Chinese name for a curated TW code, or None if not in the list
+    (e.g. a manually-entered ticker outside the curated watchlist)."""
+    code = ticker.split(".")[0]
+    return _TW_NAMES.get(code)
+
 
 def get_twse_tickers() -> list[str]:
     """Curated Taiwan universe: individual stocks + ETFs, both TWSE-listed."""
