@@ -32,6 +32,7 @@ PRICE_TARGET_HOLD_DAYS = 5
 
 market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
+currency = "NT$" if is_tw else "$"
 
 tab_overview, tab_compare_risk, tab_reco = st.tabs(
     ["📈 價格、技術指標與基本面", "🔗 多股比較、相關性與風險統計", "💡 買賣建議"]
@@ -102,7 +103,7 @@ with tab_overview:
 
         latest = close.iloc[-1]
         prev = close.iloc[-2] if len(close) > 1 else latest
-        st.metric(f"{primary} 最新收盤價", f"${latest:,.2f}",
+        st.metric(f"{primary} 最新收盤價", f"{currency}{latest:,.2f}",
                    f"{(latest / prev - 1) * 100:.2f}%")
 
         st.markdown("##### 建議買入／賣出價格參考（依勝率設定）")
@@ -123,14 +124,14 @@ with tab_overview:
         col_buy, col_sell = st.columns(2)
         with col_buy:
             if down_move is not None:
-                st.metric("建議買入價（逢低承接）", f"${latest * (1 + down_move):,.2f}",
+                st.metric("建議買入價（逢低承接）", f"{currency}{latest * (1 + down_move):,.2f}",
                            f"{down_move * 100:.2f}%")
                 st.caption(f"歷史下跌期間中，有 {win_rate_pct}% 的機率跌幅不超過此價位。")
             else:
                 st.metric("建議買入價（逢低承接）", "資料不足")
         with col_sell:
             if up_move is not None:
-                st.metric("建議賣出價（目標停利）", f"${latest * (1 + up_move):,.2f}",
+                st.metric("建議賣出價（目標停利）", f"{currency}{latest * (1 + up_move):,.2f}",
                            f"{up_move * 100:.2f}%")
                 st.caption(f"歷史上漲期間中，有 {win_rate_pct}% 的機率可達此漲幅。")
             else:
@@ -145,7 +146,7 @@ with tab_overview:
         display = fdf.copy()
         if "市值" in display:
             display["市值"] = display["市值"].apply(
-                lambda v: f"${v / 1e9:,.1f}B" if pd.notnull(v) else None)
+                lambda v: f"{currency}{v / 1e9:,.1f}B" if pd.notnull(v) else None)
         for pct_col in ["營收成長率", "盈餘成長率", "淨利率", "ROE", "股息率"]:
             if pct_col in display:
                 display[pct_col] = display[pct_col].apply(
@@ -290,8 +291,8 @@ with tab_reco:
         st.warning("無足夠資料產生建議，請確認時間範圍。")
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
-        buy_df = recommend.add_reason(recommend.add_price_targets(buy_df, "buy"), "buy")
-        sell_df = recommend.add_reason(recommend.add_price_targets(sell_df, "sell"), "sell")
+        buy_df = recommend.add_reason(recommend.add_price_targets(buy_df, "buy", currency), "buy")
+        sell_df = recommend.add_reason(recommend.add_price_targets(sell_df, "sell", currency), "sell")
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
             fmt = df.copy()
@@ -301,7 +302,7 @@ with tab_reco:
                 fmt[col] = fmt[col].apply(lambda v: f"{v:.2f}" if pd.notnull(v) else None)
             for col in ["建議買入價", "建議賣出價"]:
                 if col in fmt:
-                    fmt[col] = fmt[col].apply(lambda v: f"${v:,.2f}" if pd.notnull(v) else None)
+                    fmt[col] = fmt[col].apply(lambda v: f"{currency}{v:,.2f}" if pd.notnull(v) else None)
             return fmt
 
         col1, col2 = st.columns(2)

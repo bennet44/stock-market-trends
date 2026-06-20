@@ -113,7 +113,7 @@ def top_buy_sell(table: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFram
 PROFIT_LOW, PROFIT_HIGH = 0.03, 0.05
 
 
-def add_price_targets(df: pd.DataFrame, side: str) -> pd.DataFrame:
+def add_price_targets(df: pd.DataFrame, side: str, currency: str = "$") -> pd.DataFrame:
     """Attach a naive entry price and a 3~5% target price range.
 
     side="buy": target is the price at which to take profit (entry + 3~5%).
@@ -125,13 +125,13 @@ def add_price_targets(df: pd.DataFrame, side: str) -> pd.DataFrame:
     if side == "buy":
         out["建議買入價"] = price
         out["目標賣出價(獲利3~5%)"] = [
-            f"${p * (1 + PROFIT_LOW):,.2f} ~ ${p * (1 + PROFIT_HIGH):,.2f}" if pd.notnull(p) else None
+            f"{currency}{p * (1 + PROFIT_LOW):,.2f} ~ {currency}{p * (1 + PROFIT_HIGH):,.2f}" if pd.notnull(p) else None
             for p in price
         ]
     else:
         out["建議賣出價"] = price
         out["逢低買回參考價(回落3~5%)"] = [
-            f"${p * (1 - PROFIT_HIGH):,.2f} ~ ${p * (1 - PROFIT_LOW):,.2f}" if pd.notnull(p) else None
+            f"{currency}{p * (1 - PROFIT_HIGH):,.2f} ~ {currency}{p * (1 - PROFIT_LOW):,.2f}" if pd.notnull(p) else None
             for p in price
         ]
     return out.drop(columns=["最新收盤價"])
