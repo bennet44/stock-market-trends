@@ -102,6 +102,27 @@ with tab_overview:
         st.metric(f"{primary} 最新收盤價", f"${latest:,.2f}",
                    f"{(latest / prev - 1) * 100:.2f}%")
 
+        st.markdown("##### 建議買入／賣出價格參考")
+        st.caption(
+            "以最新收盤價為基準，單純假設 3~5% 價格波動估算進出場區間，"
+            "未考慮基本面或市場狀況，僅供參考，非投資建議。"
+        )
+        col_buy, col_sell = st.columns(2)
+        with col_buy:
+            st.metric("建議買入價", f"${latest:,.2f}")
+            st.caption(
+                f"目標賣出價（獲利 3~5%）："
+                f"${latest * (1 + recommend.PROFIT_LOW):,.2f} ~ "
+                f"${latest * (1 + recommend.PROFIT_HIGH):,.2f}"
+            )
+        with col_sell:
+            st.metric("建議賣出價", f"${latest:,.2f}")
+            st.caption(
+                f"逢低買回參考價（回落 3~5%）："
+                f"${latest * (1 - recommend.PROFIT_HIGH):,.2f} ~ "
+                f"${latest * (1 - recommend.PROFIT_LOW):,.2f}"
+            )
+
     st.divider()
     st.subheader(f"{primary} 基本面財務")
     fdf = dl.get_fundamentals_table([primary])
