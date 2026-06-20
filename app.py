@@ -280,8 +280,17 @@ with tab_overview:
             fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
         )
     news_items = news.get_recent_news(primary, company_name)
+    # Extra, market-appropriate sources layered on top of Google News: SEC
+    # EDGAR filings + Reuters for US tickers, TWSE exchange news + MOPS
+    # material-info disclosures (best-effort, see news.get_mops_news) for
+    # TW tickers. Display-only — not fed into the recommendation scoring.
+    if is_tw:
+        extra_news = news.get_twse_news(primary, company_name) + news.get_mops_news(primary, company_name)
+    else:
+        extra_news = news.get_reuters_news(primary, company_name) + news.get_sec_filings(primary)
+    news_items = sorted(news_items + extra_news, key=lambda n: n["published"], reverse=True)
     if not news_items:
-        st.info(f"暫無 {news_date_label} 的相關中文新聞。")
+        st.info(f"暫無 {news_date_label} 的相關新聞。")
     else:
         for n in news_items:
             published_str = n["published"].strftime("%Y-%m-%d %H:%M UTC")
