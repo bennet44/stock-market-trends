@@ -51,6 +51,17 @@ def _display_name(ticker: str) -> str:
     return f"{ticker}({name})" if name else ticker
 
 
+def _render_chart(fig: go.Figure) -> None:
+    """Render a Plotly chart with touch-drag interactions turned off.
+
+    On mobile, Plotly's default drag/pan handling intercepts vertical swipes
+    meant to scroll the page, making charts feel like they "trap" the finger
+    instead of letting the page scroll past them.
+    """
+    fig.update_layout(dragmode=False)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+
 market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
@@ -100,11 +111,11 @@ with tab_overview:
                                   fill="tonexty"))
         fig.update_layout(height=500, xaxis_rangeslider_visible=False,
                            margin=dict(t=20, b=20))
-        st.plotly_chart(fig, use_container_width=True)
+        _render_chart(fig)
 
         vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume"))
         vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
-        st.plotly_chart(vol_fig, use_container_width=True)
+        _render_chart(vol_fig)
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -113,7 +124,7 @@ with tab_overview:
             rsi_fig.add_hline(y=70, line_dash="dash", line_color="red")
             rsi_fig.add_hline(y=30, line_dash="dash", line_color="green")
             rsi_fig.update_layout(height=250, title="RSI (14)", margin=dict(t=30, b=10))
-            st.plotly_chart(rsi_fig, use_container_width=True)
+            _render_chart(rsi_fig)
         with col2:
             macd_df = ta.macd(close)
             macd_fig = go.Figure()
@@ -121,7 +132,7 @@ with tab_overview:
             macd_fig.add_trace(go.Scatter(x=df.index, y=macd_df["signal"], name="Signal"))
             macd_fig.add_trace(go.Bar(x=df.index, y=macd_df["hist"], name="Histogram"))
             macd_fig.update_layout(height=250, title="MACD", margin=dict(t=30, b=10))
-            st.plotly_chart(macd_fig, use_container_width=True)
+            _render_chart(macd_fig)
         with col3:
             kd_df = ta.kd(df["High"], df["Low"], close)
             kd_fig = go.Figure()
@@ -130,7 +141,7 @@ with tab_overview:
             kd_fig.add_hline(y=80, line_dash="dash", line_color="red")
             kd_fig.add_hline(y=20, line_dash="dash", line_color="green")
             kd_fig.update_layout(height=250, title="KD (9)", margin=dict(t=30, b=10))
-            st.plotly_chart(kd_fig, use_container_width=True)
+            _render_chart(kd_fig)
 
         latest = close.iloc[-1]
         prev = close.iloc[-2] if len(close) > 1 else latest
