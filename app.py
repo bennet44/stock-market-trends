@@ -305,12 +305,15 @@ with tab_compare_risk:
 
 # ---------- Tab 3: Buy/sell recommendations ----------
 with tab_reco:
-    col_period3, col_rfr, col_topn = st.columns(3)
+    col_period3, col_winrate3, col_topn = st.columns(3)
     with col_period3:
         period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab3")
         period = PERIOD_OPTIONS[period_label]
-    with col_rfr:
-        risk_free_rate = st.number_input("無風險利率（年化，%）", value=4.0, step=0.1, key="rfr_tab3") / 100
+    with col_winrate3:
+        win_rate_pct3 = st.number_input(
+            "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5, key="win_rate_tab3",
+            help="以歷史上漲／下跌期間的報酬率分布，反推在此勝率下對應的漲跌幅。",
+        )
     with col_topn:
         top_n = st.selectbox("建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key="topn_tab3")
 
@@ -325,41 +328,57 @@ with tab_reco:
         "「價格趨勢（價格 / SMA50）」「估值（1/預估PE）」"
         "「新聞情緒（近 4 日中文新聞標題關鍵字判斷）」五項因子計算組內相對評分，"
         "僅反映目前範圍內標的之相對排序，非投資建議。"
-        "買入價／賣出價以最新收盤價估算，目標區間為單純假設 3~5% 價格波動，"
-        "未考慮基本面或市場狀況，僅供參考。"
+        "買入價／賣出價以最新收盤價估算，目標漲跌幅依設定勝率反推歷史報酬率分布，"
+        "未考慮基本面或市場狀況，僅供參考。各欄位可點選表頭由大至小／小至大排序。"
     )
     if is_tw:
         reco_universe = universe.get_twse_tickers()
     else:
         reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
-        reco_table = recommend.build_recommendation_table(reco_universe, period, risk_free_rate)
+        reco_table = recommend.build_recommendation_table(reco_universe, period, DEFAULT_RISK_FREE_RATE)
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認時間範圍。")
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
-        buy_df = recommend.add_reason(recommend.add_price_targets(buy_df, "buy", currency), "buy")
-        sell_df = recommend.add_reason(recommend.add_price_targets(sell_df, "sell", currency), "sell")
+        buy_df = recommend.add_reason(
+            recommend.add_price_targets(buy_df, "buy", currency, win_rate_pct3, period), "buy")
+        sell_df = recommend.add_reason(
+            recommend.add_price_targets(sell_df, "sell", currency, win_rate_pct3, period), "sell")
+
+        _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
+        _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "RSI (14)", "綜合評分"]
+        _PRICE_COLS = ["建議買入價", "建議賣出價", "目標賣出價", "逢低買回參考價"]
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
             fmt = df.copy()
-            for col in ["期間報酬率", "趨勢(價格/SMA50)"]:
-                fmt[col] = fmt[col].apply(lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
-            for col in ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "RSI (14)", "綜合評分"]:
-                fmt[col] = fmt[col].apply(lambda v: f"{v:.2f}" if pd.notnull(v) else None)
-            for col in ["建議買入價", "建議賣出價"]:
-                if col in fmt:
-                    fmt[col] = fmt[col].apply(lambda v: f"{currency}{v:,.2f}" if pd.notnull(v) else None)
+            for col in _PCT_COLS:
+                fmt[col] = fmt[col] * 100
             fmt.index = [_display_name(t) for t in fmt.index]
             return fmt
+
+        def _column_config(df: pd.DataFrame) -> dict:
+            config = {}
+            for col in _PCT_COLS + ["勝率(%)", "獲利%"]:
+                if col in df:
+                    config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
+            for col in _PLAIN_COLS:
+                if col in df:
+                    config[col] = st.column_config.NumberColumn(col, format="%.2f")
+            for col in _PRICE_COLS:
+                if col in df:
+                    config[col] = st.column_config.NumberColumn(col, format=f"{currency}%.2f")
+            return config
 
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"#### 🟢 建議買入 Top {len(buy_df)}")
-            st.dataframe(_format_reco(buy_df), use_container_width=True)
+            fmt_buy = _format_reco(buy_df)
+            st.dataframe(fmt_buy, use_container_width=True, column_config=_column_config(fmt_buy))
         with col2:
             st.markdown(f"#### 🔴 建議賣出 Top {len(sell_df)}")
-            st.dataframe(_format_reco(sell_df), use_container_width=True)
+            fmt_sell = _format_reco(sell_df)
+            st.dataframe(fmt_sell, use_container_width=True, column_config=_column_config(fmt_sell))
 
         if len(buy_df) < top_n:
             st.info(

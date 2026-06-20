@@ -110,30 +110,43 @@ def top_buy_sell(table: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFram
     return buy, sell
 
 
-PROFIT_LOW, PROFIT_HIGH = 0.03, 0.05
+PRICE_TARGET_HOLD_DAYS = 5
 
 
-def add_price_targets(df: pd.DataFrame, side: str, currency: str = "$") -> pd.DataFrame:
-    """Attach a naive entry price and a 3~5% target price range.
+def add_price_targets(
+    df: pd.DataFrame, side: str, currency: str = "$",
+    win_rate_pct: float = 60, period: str = "1y",
+) -> pd.DataFrame:
+    """Attach an entry price plus a win-rate-driven target price.
 
-    side="buy": target is the price at which to take profit (entry + 3~5%).
-    side="sell": target is a pullback price worth watching to buy back in
-    (entry - 3~5%), since "sell" here means reduce/avoid, not short selling.
+    For each ticker, pulls its own price history and builds an empirical
+    distribution of forward returns (PRICE_TARGET_HOLD_DAYS trading days
+    ahead). side="buy": the target is the profit-taking move achieved with
+    win_rate_pct%% probability among historically up periods. side="sell":
+    the target is a pullback worth watching to buy back in, sized to the
+    win_rate_pct%% percentile among historically down periods (since "sell"
+    here means reduce/avoid, not short selling).
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
+    win_rates, profit_pcts, targets = [], [], []
+    for t, p in zip(out.index, price):
+        hist = dl.get_price_history(t, period=period)
+        close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
+        fwd_returns = close.pct_change(periods=PRICE_TARGET_HOLD_DAYS).dropna()
+        subset = fwd_returns[fwd_returns > 0] if side == "buy" else fwd_returns[fwd_returns < 0]
+        move = np.percentile(subset, 100 - win_rate_pct) if not subset.empty else None
+        win_rates.append(win_rate_pct if move is not None else None)
+        profit_pcts.append(move * 100 if move is not None else None)
+        targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
+    out["勝率(%)"] = win_rates
+    out["獲利%"] = profit_pcts
     if side == "buy":
         out["建議買入價"] = price
-        out["目標賣出價(獲利3~5%)"] = [
-            f"{currency}{p * (1 + PROFIT_LOW):,.2f} ~ {currency}{p * (1 + PROFIT_HIGH):,.2f}" if pd.notnull(p) else None
-            for p in price
-        ]
+        out["目標賣出價"] = targets
     else:
         out["建議賣出價"] = price
-        out["逢低買回參考價(回落3~5%)"] = [
-            f"{currency}{p * (1 - PROFIT_HIGH):,.2f} ~ {currency}{p * (1 - PROFIT_LOW):,.2f}" if pd.notnull(p) else None
-            for p in price
-        ]
+        out["逢低買回參考價"] = targets
     return out.drop(columns=["最新收盤價"])
 
 
