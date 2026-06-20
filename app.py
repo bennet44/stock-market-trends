@@ -51,15 +51,22 @@ def _display_name(ticker: str) -> str:
     return f"{ticker}({name})" if name else ticker
 
 
-def _render_chart(fig: go.Figure) -> None:
-    """Render a Plotly chart with touch-drag interactions turned off.
+def _render_chart(fig: go.Figure, analysis_mode: bool = False) -> None:
+    """Render a Plotly chart.
 
-    On mobile, Plotly's default drag/pan handling intercepts vertical swipes
-    meant to scroll the page, making charts feel like they "trap" the finger
-    instead of letting the page scroll past them.
+    By default, drag/pan is disabled so mobile scroll isn't trapped by the
+    chart; hover (desktop) / tap (mobile) still works for reading exact
+    OHLC values regardless of this mode. When analysis_mode is on, drag/pan
+    and scroll-to-zoom are re-enabled for users who want to zoom into a
+    specific range — trading off easy page scrolling for that.
     """
-    fig.update_layout(dragmode=False)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    if analysis_mode:
+        fig.update_layout(dragmode="zoom")
+        config = {"displayModeBar": True, "scrollZoom": True}
+    else:
+        fig.update_layout(dragmode=False)
+        config = {"displayModeBar": False, "scrollZoom": False}
+    st.plotly_chart(fig, use_container_width=True, config=config)
 
 
 market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
@@ -97,6 +104,12 @@ with tab_overview:
         sma20, sma50 = ta.sma(close, 20), ta.sma(close, 50)
         bb = ta.bollinger_bands(close)
 
+        st.caption("提示：將滑鼠移到圖上（手機點一下 K 棒）即可看到當天開盤／最高／最低／收盤價，不需開啟下方分析模式。")
+        analysis_mode = st.checkbox(
+            "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
+            key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
+        )
+
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
@@ -111,11 +124,11 @@ with tab_overview:
                                   fill="tonexty"))
         fig.update_layout(height=500, xaxis_rangeslider_visible=False,
                            margin=dict(t=20, b=20))
-        _render_chart(fig)
+        _render_chart(fig, analysis_mode)
 
         vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume"))
         vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
-        _render_chart(vol_fig)
+        _render_chart(vol_fig, analysis_mode)
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -124,7 +137,7 @@ with tab_overview:
             rsi_fig.add_hline(y=70, line_dash="dash", line_color="red")
             rsi_fig.add_hline(y=30, line_dash="dash", line_color="green")
             rsi_fig.update_layout(height=250, title="RSI (14)", margin=dict(t=30, b=10))
-            _render_chart(rsi_fig)
+            _render_chart(rsi_fig, analysis_mode)
         with col2:
             macd_df = ta.macd(close)
             macd_fig = go.Figure()
@@ -132,7 +145,7 @@ with tab_overview:
             macd_fig.add_trace(go.Scatter(x=df.index, y=macd_df["signal"], name="Signal"))
             macd_fig.add_trace(go.Bar(x=df.index, y=macd_df["hist"], name="Histogram"))
             macd_fig.update_layout(height=250, title="MACD", margin=dict(t=30, b=10))
-            _render_chart(macd_fig)
+            _render_chart(macd_fig, analysis_mode)
         with col3:
             kd_df = ta.kd(df["High"], df["Low"], close)
             kd_fig = go.Figure()
@@ -141,7 +154,7 @@ with tab_overview:
             kd_fig.add_hline(y=80, line_dash="dash", line_color="red")
             kd_fig.add_hline(y=20, line_dash="dash", line_color="green")
             kd_fig.update_layout(height=250, title="KD (9)", margin=dict(t=30, b=10))
-            _render_chart(kd_fig)
+            _render_chart(kd_fig, analysis_mode)
 
         latest = close.iloc[-1]
         prev = close.iloc[-2] if len(close) > 1 else latest
