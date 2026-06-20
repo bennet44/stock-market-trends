@@ -1,10 +1,12 @@
 """US Stock Analyst Dashboard — Streamlit app."""
 import datetime as dt
+import json
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_local_storage import LocalStorage
 
 from src import data_loader as dl
 from src import fcn
@@ -15,6 +17,22 @@ from src import technical as ta
 from src import universe
 
 st.set_page_config(page_title="美股分析師看板", layout="wide")
+
+# Persist every tab's widget settings/inputs in the visitor's browser
+# (localStorage) so they're restored next time the same browser opens the
+# app — this round-trips through a hidden component on every rerun, so it
+# survives Streamlit Cloud container restarts (unlike writing to a server
+# file) but is local to each visitor's browser, not shared across users.
+_SETTINGS_STORAGE_KEY = "dashboard_settings"
+_local_storage = LocalStorage()
+_saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
+try:
+    _saved_settings = json.loads(_saved_settings_raw) if _saved_settings_raw else {}
+except (TypeError, ValueError):
+    _saved_settings = {}
+for _k, _v in _saved_settings.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
 PERIOD_OPTIONS = {
     "1個月": "1mo", "3個月": "3mo", "6個月": "6mo",
@@ -574,3 +592,12 @@ with tab_fcn:
         "不含股息再投資與交易成本、不含發行商信用風險與流動性折價，且歷史波動率／報酬率不保證代表"
         "未來。實際 FCN 報價請以發行商（券商/銀行）條款書為準。"
     )
+
+# Snapshot every widget's current value back into the browser's localStorage
+# (overwriting the dict loaded at startup) so it's there on the next visit.
+# Excludes the local-storage component's own bookkeeping keys.
+_settings_to_save = {
+    k: v for k, v in st.session_state.items()
+    if k != "storage_init" and not k.startswith("save_")
+}
+_local_storage.setItem(_SETTINGS_STORAGE_KEY, json.dumps(_settings_to_save), key="save_dashboard_settings")
