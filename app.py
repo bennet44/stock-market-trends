@@ -37,6 +37,14 @@ PRICE_TARGET_HORIZONS = {
     "長期（1年）": {"trading_days": 252, "calendar_days": 365},
 }
 
+def _display_name(ticker: str) -> str:
+    """Return "TICKER(公司名稱)", falling back to the bare ticker if the
+    name is unavailable (e.g. offline or an unrecognized symbol)."""
+    info = dl.get_company_info(ticker)
+    name = info.get("shortName")
+    return f"{ticker}({name})" if name else ticker
+
+
 market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
@@ -62,7 +70,8 @@ with tab_overview:
     with col_period:
         period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab1")
     period = PERIOD_OPTIONS[period_label]
-    st.subheader(f"{primary} 價格與技術指標")
+    primary_label = _display_name(primary)
+    st.subheader(f"{primary_label} 價格與技術指標")
     df = dl.get_price_history(primary, period=period)
     if df.empty:
         st.error(f"找不到 {primary} 的資料，請確認代號是否正確。")
@@ -74,7 +83,7 @@ with tab_overview:
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-            name=primary,
+            name=primary_label,
         ))
         fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1)))
         fig.add_trace(go.Scatter(x=df.index, y=sma50, name="SMA50", line=dict(width=1)))
@@ -119,7 +128,7 @@ with tab_overview:
 
         latest = close.iloc[-1]
         prev = close.iloc[-2] if len(close) > 1 else latest
-        st.metric(f"{primary} 最新收盤價", f"{currency}{latest:,.2f}",
+        st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
                    f"{(latest / prev - 1) * 100:.2f}%")
 
         st.markdown("##### 建議買入／賣出價格參考（依勝率設定）")
@@ -167,7 +176,7 @@ with tab_overview:
                 st.metric("建議賣出價（目標停利）", "資料不足")
 
     st.divider()
-    st.subheader(f"{primary} 基本面財務")
+    st.subheader(f"{primary_label} 基本面財務")
     fdf = dl.get_fundamentals_table([primary])
     if fdf.empty:
         st.warning("無法取得基本面資料。")
@@ -184,7 +193,7 @@ with tab_overview:
 
     st.divider()
     news_date_label = news.recent_news_date_label()
-    st.subheader(f"{primary} 相關新聞（{news_date_label}）")
+    st.subheader(f"{primary_label} 相關新聞（{news_date_label}）")
     company_name = (
         fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
     )
@@ -235,17 +244,19 @@ with tab_compare_risk:
     if close_df.empty or len(chart_tickers) < 2:
         st.info("請輸入至少兩個股票代號以進行比較。")
     else:
+        chart_labels = {t: _display_name(t) for t in chart_tickers}
         normalized = close_df / close_df.iloc[0] * 100
         norm_fig = go.Figure()
         for t in normalized.columns:
-            norm_fig.add_trace(go.Scatter(x=normalized.index, y=normalized[t], name=t))
+            norm_fig.add_trace(go.Scatter(x=normalized.index, y=normalized[t], name=chart_labels.get(t, t)))
         norm_fig.update_layout(height=400, title="累積報酬比較（基準=100）",
                                 margin=dict(t=40, b=10))
         st.plotly_chart(norm_fig, use_container_width=True)
 
         corr = risk.correlation_matrix(close_df)
+        corr_labels = [chart_labels.get(t, t) for t in corr.columns]
         heat_fig = go.Figure(go.Heatmap(
-            z=corr.values, x=corr.columns, y=corr.index,
+            z=corr.values, x=corr_labels, y=corr_labels,
             colorscale="RdBu", zmid=0, text=corr.round(2).values,
             texttemplate="%{text}",
         ))
@@ -263,6 +274,7 @@ with tab_compare_risk:
             rows[t] = risk.risk_summary(df_t["Close"], DEFAULT_RISK_FREE_RATE)
     if rows:
         summary_df = pd.DataFrame(rows).T
+        summary_df.index = [_display_name(t) for t in summary_df.index]
         fmt = summary_df.copy()
         for col in ["年化報酬率", "年化波動率", "最大回撤", "VaR (95%, 日)"]:
             fmt[col] = fmt[col].apply(lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
@@ -278,7 +290,7 @@ with tab_compare_risk:
         hist_fig = go.Figure()
         for t in hist_tickers:
             rets = risk.daily_returns(price_by_ticker[t]["Close"]) * 100
-            hist_fig.add_trace(go.Histogram(x=rets, name=t, opacity=0.6, nbinsx=60))
+            hist_fig.add_trace(go.Histogram(x=rets, name=_display_name(t), opacity=0.6, nbinsx=60))
         hist_fig.update_layout(barmode="overlay", height=350,
                                 xaxis_title="日報酬率 (%)", margin=dict(t=20, b=10))
         st.plotly_chart(hist_fig, use_container_width=True)
@@ -332,6 +344,7 @@ with tab_reco:
             for col in ["建議買入價", "建議賣出價"]:
                 if col in fmt:
                     fmt[col] = fmt[col].apply(lambda v: f"{currency}{v:,.2f}" if pd.notnull(v) else None)
+            fmt.index = [_display_name(t) for t in fmt.index]
             return fmt
 
         col1, col2 = st.columns(2)
