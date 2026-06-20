@@ -98,3 +98,25 @@ def normalize_tw_ticker(raw: str) -> str:
         return raw
     return f"{raw}.TW"
 
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def resolve_tw_ticker(raw: str) -> str:
+    """Resolve a bare Taiwan code to whichever Yahoo Finance suffix has data.
+
+    Bare codes are ambiguous between TWSE-listed (".TW") and TPEx/OTC-listed
+    (".TWO") stocks (e.g. 3685 is OTC, not TWSE), so a fixed ".TW" suffix
+    silently fails for OTC codes. Tries ".TW" first (the common case), falls
+    back to ".TWO" if that has no price history, and otherwise returns the
+    ".TW" guess unchanged (e.g. when offline) so callers still get a usable
+    ticker string.
+    """
+    candidate = normalize_tw_ticker(raw)
+    if "." in raw.strip():
+        return candidate
+    if not dl.get_price_history(candidate, period="5d").empty:
+        return candidate
+    alt = f"{raw.strip().upper()}.TWO"
+    if not dl.get_price_history(alt, period="5d").empty:
+        return alt
+    return candidate
+

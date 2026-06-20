@@ -50,7 +50,7 @@ with tab_overview:
         raw_primary = st.text_input(
             ticker_label, value=default_ticker, key=f"price_ticker_{'tw' if is_tw else 'us'}"
         ).strip().upper() or default_ticker
-        primary = universe.normalize_tw_ticker(raw_primary) if is_tw else raw_primary
+        primary = universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary
     with col_period:
         period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab1")
     period = PERIOD_OPTIONS[period_label]
@@ -184,7 +184,7 @@ with tab_compare_risk:
     raw_compare = compare_input.strip()
     if raw_compare:
         if is_tw:
-            compare_tickers = [universe.normalize_tw_ticker(t) for t in raw_compare.split(",") if t.strip()]
+            compare_tickers = [universe.resolve_tw_ticker(t) for t in raw_compare.split(",") if t.strip()]
         else:
             compare_tickers = [t.strip().upper() for t in raw_compare.split(",") if t.strip()]
     elif is_tw:
