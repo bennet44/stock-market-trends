@@ -1,4 +1,6 @@
 """US Stock Analyst Dashboard — Streamlit app."""
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,9 +28,14 @@ MAX_CHART_TICKERS = 30
 # input now lives on the recommendation tab), so its Sharpe Ratio uses this
 # fixed default instead.
 DEFAULT_RISK_FREE_RATE = 0.04
-# Holding-period window (trading days) used to build the historical return
-# distribution behind Tab 1's win-rate-based buy/sell price reference.
-PRICE_TARGET_HOLD_DAYS = 5
+# Holding-period choices for Tab 1's win-rate-based buy/sell price reference:
+# trading days drive the historical return distribution, calendar days drive
+# the displayed "query date ~ target date" label.
+PRICE_TARGET_HORIZONS = {
+    "短期（1週）": {"trading_days": 5, "calendar_days": 7},
+    "中期（6個月）": {"trading_days": 126, "calendar_days": 182},
+    "長期（1年）": {"trading_days": 252, "calendar_days": 365},
+}
 
 market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
@@ -107,16 +114,29 @@ with tab_overview:
                    f"{(latest / prev - 1) * 100:.2f}%")
 
         st.markdown("##### 建議買入／賣出價格參考（依勝率設定）")
-        win_rate_pct = st.number_input(
-            "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5,
-            key=f"win_rate_{'tw' if is_tw else 'us'}",
-            help="以歷史上漲／下跌期間的報酬率分布，反推在此勝率下對應的漲跌幅。",
-        )
+        col_horizon, col_winrate = st.columns(2)
+        with col_horizon:
+            horizon_label = st.selectbox(
+                "預測期間", list(PRICE_TARGET_HORIZONS.keys()), index=0,
+                key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
+            )
+        with col_winrate:
+            win_rate_pct = st.number_input(
+                "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5,
+                key=f"win_rate_{'tw' if is_tw else 'us'}",
+                help="以歷史上漲／下跌期間的報酬率分布，反推在此勝率下對應的漲跌幅。",
+            )
+        horizon = PRICE_TARGET_HORIZONS[horizon_label]
+        hold_days, calendar_days = horizon["trading_days"], horizon["calendar_days"]
+        query_date = dt.date.today()
+        target_date = query_date + dt.timedelta(days=calendar_days)
         st.caption(
-            f"依過去 {PRICE_TARGET_HOLD_DAYS} 個交易日的歷史報酬率分布估算，"
+            f"依過去 {hold_days} 個交易日（{horizon_label}）的歷史報酬率分布估算，"
+            f"對應查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
+            f"{horizon_label}預測日 {target_date.year}/{target_date.month}/{target_date.day}，"
             "未考慮基本面或市場狀況，僅供參考，非投資建議。"
         )
-        fwd_returns = close.pct_change(periods=PRICE_TARGET_HOLD_DAYS).dropna()
+        fwd_returns = close.pct_change(periods=hold_days).dropna()
         ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
         up_move = np.percentile(ups, 100 - win_rate_pct) if not ups.empty else None
         down_move = np.percentile(downs, 100 - win_rate_pct) if not downs.empty else None
