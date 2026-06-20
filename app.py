@@ -27,6 +27,9 @@ MAX_CHART_TICKERS = 30
 # fixed default instead.
 DEFAULT_RISK_FREE_RATE = 0.04
 
+market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
+is_tw = market == "台股"
+
 tab_overview, tab_compare_risk, tab_reco = st.tabs(
     ["📈 價格、技術指標與基本面", "🔗 多股比較、相關性與風險統計", "💡 買賣建議"]
 )
@@ -35,7 +38,16 @@ tab_overview, tab_compare_risk, tab_reco = st.tabs(
 with tab_overview:
     col_ticker, col_period = st.columns([2, 1])
     with col_ticker:
-        primary = st.text_input("股票代號", value="AAPL", key="price_ticker").strip().upper() or "AAPL"
+        if is_tw:
+            default_ticker = "2330"
+            ticker_label = "股票代號（台股代碼，例如 2330、0050）"
+        else:
+            default_ticker = "AAPL"
+            ticker_label = "股票代號"
+        raw_primary = st.text_input(
+            ticker_label, value=default_ticker, key=f"price_ticker_{'tw' if is_tw else 'us'}"
+        ).strip().upper() or default_ticker
+        primary = universe.normalize_tw_ticker(raw_primary) if is_tw else raw_primary
     with col_period:
         period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab1")
     period = PERIOD_OPTIONS[period_label]
@@ -124,14 +136,26 @@ with tab_overview:
 with tab_compare_risk:
     col_compare, col_period2 = st.columns([2, 1])
     with col_compare:
+        if is_tw:
+            compare_label = "比較用股票代號（逗號分隔，台股代碼；留空代表全部台股觀察清單，含ETF及個股）"
+            compare_default = "2330, 0050"
+        else:
+            compare_label = "比較用股票代號（逗號分隔；留空代表全部 S&P 500 成分股）"
+            compare_default = "AAPL, OKLO"
         compare_input = st.text_input(
-            "比較用股票代號（逗號分隔；留空代表全部 S&P 500 成分股）", value="AAPL, OKLO")
+            compare_label, value=compare_default, key=f"compare_input_{'tw' if is_tw else 'us'}")
     with col_period2:
         period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab2")
     period = PERIOD_OPTIONS[period_label]
     raw_compare = compare_input.strip()
     if raw_compare:
-        compare_tickers = [t.strip().upper() for t in raw_compare.split(",") if t.strip()]
+        if is_tw:
+            compare_tickers = [universe.normalize_tw_ticker(t) for t in raw_compare.split(",") if t.strip()]
+        else:
+            compare_tickers = [t.strip().upper() for t in raw_compare.split(",") if t.strip()]
+    elif is_tw:
+        compare_tickers = universe.get_twse_tickers()
+        st.caption(f"已自動帶入全部台股觀察清單，含ETF及個股（{len(compare_tickers)} 檔）。")
     else:
         compare_tickers = universe.get_sp500_tickers()
         st.caption(f"已自動帶入全部 S&P 500 成分股（{len(compare_tickers)} 檔）。首次掃描資料量大，"
@@ -209,16 +233,23 @@ with tab_reco:
         top_n = st.selectbox("建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key="topn_tab3")
 
     st.subheader("基金經理人觀點：建議買入 / 賣出")
+    if is_tw:
+        scope_desc = "篩選範圍為「台股觀察清單（含ETF及個股）」。"
+    else:
+        scope_desc = "篩選範圍為「美股交易量前 30 大（依近期平均成交量排序的觀察名單）」與「S&P 500 成分股」的聯集。"
     st.caption(
-        "篩選範圍為「美股交易量前 30 大（依近期平均成交量排序的觀察名單）」"
-        "與「S&P 500 成分股」的聯集。綜合「期間報酬率」「Sharpe Ratio」"
+        scope_desc +
+        "綜合「期間報酬率」「Sharpe Ratio」"
         "「價格趨勢（價格 / SMA50）」「估值（1/預估PE）」"
-        "「新聞情緒（近兩日中文新聞標題關鍵字判斷）」五項因子計算組內相對評分，"
+        "「新聞情緒（近 4 日中文新聞標題關鍵字判斷）」五項因子計算組內相對評分，"
         "僅反映目前範圍內標的之相對排序，非投資建議。"
         "買入價／賣出價以最新收盤價估算，目標區間為單純假設 3~5% 價格波動，"
         "未考慮基本面或市場狀況，僅供參考。"
     )
-    reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
+    if is_tw:
+        reco_universe = universe.get_twse_tickers()
+    else:
+        reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
         reco_table = recommend.build_recommendation_table(reco_universe, period, risk_free_rate)
     if reco_table.empty:
