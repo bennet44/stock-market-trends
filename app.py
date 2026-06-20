@@ -32,6 +32,8 @@ DEFAULT_RISK_FREE_RATE = 0.04
 # trading days drive the historical return distribution, calendar days drive
 # the displayed "query date ~ target date" label.
 PRICE_TARGET_HORIZONS = {
+    "預測期間(1天)": {"trading_days": 1, "calendar_days": 1},
+    "預測期間(3天)": {"trading_days": 3, "calendar_days": 3},
     "短期（1週）": {"trading_days": 5, "calendar_days": 7},
     "中期（6個月）": {"trading_days": 126, "calendar_days": 182},
     "長期（1年）": {"trading_days": 252, "calendar_days": 365},
@@ -177,7 +179,7 @@ with tab_overview:
         col_horizon, col_winrate = st.columns(2)
         with col_horizon:
             horizon_label = st.selectbox(
-                "預測期間", list(PRICE_TARGET_HORIZONS.keys()), index=0,
+                "預測期間", list(PRICE_TARGET_HORIZONS.keys()), index=2,
                 key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
             )
         with col_winrate:
