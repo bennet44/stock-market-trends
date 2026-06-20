@@ -110,9 +110,11 @@ with tab_overview:
             key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
         )
 
-        # "三竹股市" look for TW stocks: black background, 漲=red／跌=green
-        # candles (the reverse of the US green-up/red-down convention).
+        # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the
+        # reverse of the US green-up/red-down convention); background stays
+        # white to match the US chart.
         up_color, down_color = ("#ff3333", "#00b300") if is_tw else ("#2ca02c", "#d62728")
+        legend_top = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
 
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
@@ -121,22 +123,15 @@ with tab_overview:
             increasing_line_color=up_color, increasing_fillcolor=up_color,
             decreasing_line_color=down_color, decreasing_fillcolor=down_color,
         ))
-        fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#ffffff")))
-        fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ffd700")))
-        fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#ff69b4")))
+        fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
+        fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
+        fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
         fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="Bollinger Upper",
                                   line=dict(width=1, dash="dot"), opacity=0.5))
         fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="Bollinger Lower",
-                                  line=dict(width=1, dash="dot"), opacity=0.5,
-                                  fill="tonexty"))
-        fig.update_layout(height=500, xaxis_rangeslider_visible=False,
-                           margin=dict(t=20, b=20))
-        if is_tw:
-            fig.update_layout(
-                plot_bgcolor="#000000", paper_bgcolor="#000000",
-                font_color="#e0e0e0",
-                xaxis=dict(gridcolor="#333333"), yaxis=dict(gridcolor="#333333"),
-            )
+                                  line=dict(width=1, dash="dot"), opacity=0.5))
+        fig.update_layout(height=600, xaxis_rangeslider_visible=False,
+                           margin=dict(t=80, b=20), legend=legend_top)
         _render_chart(fig, analysis_mode)
 
         vol_colors = [
@@ -145,12 +140,6 @@ with tab_overview:
         ]
         vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume", marker_color=vol_colors))
         vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
-        if is_tw:
-            vol_fig.update_layout(
-                plot_bgcolor="#000000", paper_bgcolor="#000000",
-                font_color="#e0e0e0",
-                xaxis=dict(gridcolor="#333333"), yaxis=dict(gridcolor="#333333"),
-            )
         _render_chart(vol_fig, analysis_mode)
 
         col1, col2, col3 = st.columns(3)
