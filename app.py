@@ -24,6 +24,12 @@ st.set_page_config(page_title="美股分析師看板", layout="wide")
 # survives Streamlit Cloud container restarts (unlike writing to a server
 # file) but is local to each visitor's browser, not shared across users.
 _SETTINGS_STORAGE_KEY = "dashboard_settings"
+# "market" is deliberately excluded: remembering it silently re-selects
+# 台股/美股 from a past visit, and a user who doesn't notice the toggle
+# already flipped can end up typing a US ticker into the TW-labeled field
+# (or vice versa) and seeing the wrong stock. Every other tab's
+# settings/inputs are still remembered.
+_PERSIST_EXCLUDE_KEYS = {"market"}
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
 try:
@@ -31,7 +37,7 @@ try:
 except (TypeError, ValueError):
     _saved_settings = {}
 for _k, _v in _saved_settings.items():
-    if _k not in st.session_state:
+    if _k not in st.session_state and _k not in _PERSIST_EXCLUDE_KEYS:
         st.session_state[_k] = _v
 
 PERIOD_OPTIONS = {
@@ -126,7 +132,9 @@ with tab_overview:
         ).strip().upper() or default_ticker
         primary = universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary
     with col_period:
-        period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab1")
+        period_label = st.selectbox(
+            "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab1_{'tw' if is_tw else 'us'}"
+        )
     period = PERIOD_OPTIONS[period_label]
     primary_label = _display_name(primary)
     st.subheader(f"{primary_label} 價格與技術指標")
@@ -309,7 +317,9 @@ with tab_compare_risk:
         compare_input = st.text_input(
             compare_label, value=compare_default, key=f"compare_input_{'tw' if is_tw else 'us'}")
     with col_period2:
-        period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab2")
+        period_label = st.selectbox(
+            "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab2_{'tw' if is_tw else 'us'}"
+        )
     period = PERIOD_OPTIONS[period_label]
     raw_compare = compare_input.strip()
     if raw_compare:
@@ -392,15 +402,20 @@ with tab_compare_risk:
 with tab_reco:
     col_period3, col_winrate3, col_topn = st.columns(3)
     with col_period3:
-        period_label = st.selectbox("時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key="period_tab3")
+        period_label = st.selectbox(
+            "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab3_{'tw' if is_tw else 'us'}"
+        )
         period = PERIOD_OPTIONS[period_label]
     with col_winrate3:
         win_rate_pct3 = st.number_input(
-            "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5, key="win_rate_tab3",
+            "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5,
+            key=f"win_rate_tab3_{'tw' if is_tw else 'us'}",
             help="以歷史上漲／下跌期間的報酬率分布，反推在此勝率下對應的漲跌幅。",
         )
     with col_topn:
-        top_n = st.selectbox("建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key="topn_tab3")
+        top_n = st.selectbox(
+            "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_tab3_{'tw' if is_tw else 'us'}"
+        )
 
     st.subheader("基金經理人觀點：建議買入 / 賣出")
     if is_tw:
@@ -484,7 +499,10 @@ with tab_fcn:
 
     col_n_assets, col_tickers = st.columns([1, 3])
     with col_n_assets:
-        n_assets = st.number_input("標的數量", min_value=1, max_value=FCN_MAX_ASSETS, value=1, step=1, key="fcn_n_assets")
+        n_assets = st.number_input(
+            "標的數量", min_value=1, max_value=FCN_MAX_ASSETS, value=1, step=1,
+            key=f"fcn_n_assets_{'tw' if is_tw else 'us'}",
+        )
     with col_tickers:
         fcn_default_tickers = ", ".join(
             (["2330", "2317", "2454", "2412", "2882"] if is_tw else ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"])[:n_assets]
@@ -499,23 +517,37 @@ with tab_fcn:
     if len(fcn_tickers) != n_assets:
         st.warning(f"已設定標的數量為 {n_assets}，但目前以「,」區隔輸入了 {len(fcn_tickers)} 個代號，請調整一致。")
     else:
+        _mkt_suffix = "tw" if is_tw else "us"
         col_tenor, col_strike, col_ko = st.columns(3)
         with col_tenor:
-            tenor_months = st.number_input("投資時間（個X月）", min_value=1, max_value=60, value=6, step=1, key="fcn_tenor")
+            tenor_months = st.number_input(
+                "投資時間（個X月）", min_value=1, max_value=60, value=6, step=1, key=f"fcn_tenor_{_mkt_suffix}"
+            )
         with col_strike:
-            strike_pct = st.number_input("執行價 STRIKE(%)", min_value=50.0, max_value=120.0, value=100.0, step=1.0, key="fcn_strike") / 100
+            strike_pct = st.number_input(
+                "執行價 STRIKE(%)", min_value=50.0, max_value=120.0, value=100.0, step=1.0,
+                key=f"fcn_strike_{_mkt_suffix}",
+            ) / 100
         with col_ko:
-            ko_pct = st.number_input("提前出場 KO(%)", min_value=50.0, max_value=130.0, value=100.0, step=1.0, key="fcn_ko") / 100
+            ko_pct = st.number_input(
+                "提前出場 KO(%)", min_value=50.0, max_value=130.0, value=100.0, step=1.0,
+                key=f"fcn_ko_{_mkt_suffix}",
+            ) / 100
 
         col_ki, col_coupon, col_ki_style = st.columns(3)
         with col_ki:
-            ki_pct = st.number_input("下限價 KI(%)", min_value=10.0, max_value=120.0, value=75.0, step=1.0, key="fcn_ki") / 100
+            ki_pct = st.number_input(
+                "下限價 KI(%)", min_value=10.0, max_value=120.0, value=75.0, step=1.0, key=f"fcn_ki_{_mkt_suffix}"
+            ) / 100
         with col_coupon:
-            coupon_rate = st.number_input("年化收益率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5, key="fcn_coupon") / 100
+            coupon_rate = st.number_input(
+                "年化收益率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
+                key=f"fcn_coupon_{_mkt_suffix}",
+            ) / 100
         with col_ki_style:
             ki_style_label = st.radio(
                 "KI 觀察方式", ["到期日觀察（歐式，較常見）", "每日觀察（美式，較嚴格）"],
-                key="fcn_ki_style",
+                key=f"fcn_ki_style_{_mkt_suffix}",
             )
             ki_style = "maturity" if ki_style_label.startswith("到期日觀察") else "continuous"
 
@@ -563,7 +595,7 @@ with tab_fcn:
                 "風險評估的股價成長率假設",
                 ["中性假設：預期報酬＝無風險利率，僅反映波動風險（較保守，預設）",
                  "延伸近期歷史走勢（依上表「年化歷史漲跌幅」，可能過度樂觀或悲觀，僅供對照）"],
-                key="fcn_drift_choice",
+                key=f"fcn_drift_choice_{_mkt_suffix}",
             )
             use_historical_drift = drift_choice.startswith("延伸近期歷史走勢")
 
@@ -610,9 +642,10 @@ with tab_fcn:
 
 # Snapshot every widget's current value back into the browser's localStorage
 # (overwriting the dict loaded at startup) so it's there on the next visit.
-# Excludes the local-storage component's own bookkeeping keys.
+# Excludes the local-storage component's own bookkeeping keys and "market"
+# (see _PERSIST_EXCLUDE_KEYS above).
 _settings_to_save = {
     k: v for k, v in st.session_state.items()
-    if k != "storage_init" and not k.startswith("save_")
+    if k != "storage_init" and not k.startswith("save_") and k not in _PERSIST_EXCLUDE_KEYS
 }
 _local_storage.setItem(_SETTINGS_STORAGE_KEY, json.dumps(_settings_to_save), key="save_dashboard_settings")
