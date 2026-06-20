@@ -1,4 +1,4 @@
-"""Stock universe helpers — S&P 500 constituents and a high-volume watchlist."""
+"""Stock universe helpers — S&P 500/US watchlist and Taiwan stock/ETF lists."""
 import pandas as pd
 import streamlit as st
 
@@ -61,4 +61,40 @@ def get_top_volume_tickers(n: int = 30) -> list[str]:
             volumes[t] = df["Volume"].tail(10).mean()
     ranked = sorted(volumes, key=volumes.get, reverse=True)
     return ranked[:n]
+
+
+# Curated list of large/liquid Taiwan individual stocks (TWSE-listed), given
+# as bare 4-digit codes; Yahoo Finance needs the ".TW" suffix to resolve them.
+_TW_STOCK_CODES = [
+    "2330", "2317", "2454", "2412", "2882", "2881", "1301", "2308", "2303", "2002",
+    "3008", "2891", "2884", "2885", "1216", "2207", "2603", "2609", "2615", "3034",
+    "3037", "3711", "2379", "6505", "5871", "2890", "2880", "1303", "1101", "9910",
+    "2912", "4904", "3045", "2357", "2356", "2382", "2395", "6669", "3661", "6446",
+]
+
+# Curated list of popular Taiwan-listed ETFs (bare codes, same ".TW" suffix rule).
+_TW_ETF_CODES = [
+    "0050", "0056", "006208", "00878", "00919", "00929", "00940", "00713",
+    "00692", "00701", "00733", "00850", "00891", "00900", "00905", "00961",
+]
+
+_TW_STOCK_TICKERS = [f"{c}.TW" for c in _TW_STOCK_CODES]
+_TW_ETF_TICKERS = [f"{c}.TW" for c in _TW_ETF_CODES]
+
+
+def get_twse_tickers() -> list[str]:
+    """Curated Taiwan universe: individual stocks + ETFs, both TWSE-listed."""
+    return sorted(set(_TW_STOCK_TICKERS) | set(_TW_ETF_TICKERS))
+
+
+def normalize_tw_ticker(raw: str) -> str:
+    """Append the Yahoo Finance ".TW" suffix to a bare Taiwan stock/ETF code.
+
+    Leaves tickers that already carry an exchange suffix (e.g. "2330.TW",
+    "6188.TWO") untouched.
+    """
+    raw = raw.strip().upper()
+    if not raw or "." in raw:
+        return raw
+    return f"{raw}.TW"
 

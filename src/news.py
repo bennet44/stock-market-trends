@@ -30,7 +30,8 @@ def get_recent_news(ticker: str, company_name: str | None = None, days: int = 4)
     (today and the `days - 1` days before it, UTC), newest first. Returns []
     on any network or parse failure.
     """
-    query = f"{company_name} {ticker} 股票" if company_name else f"{ticker} 股票"
+    search_ticker = ticker.split(".")[0]
+    query = f"{company_name} {search_ticker} 股票" if company_name else f"{search_ticker} 股票"
     url = _RSS_URL.format(query=urllib.parse.quote(query))
     try:
         with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:
