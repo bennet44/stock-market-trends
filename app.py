@@ -91,7 +91,7 @@ with tab_overview:
         vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
         st.plotly_chart(vol_fig, use_container_width=True)
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             rsi_series = ta.rsi(close)
             rsi_fig = go.Figure(go.Scatter(x=df.index, y=rsi_series, name="RSI"))
@@ -107,6 +107,15 @@ with tab_overview:
             macd_fig.add_trace(go.Bar(x=df.index, y=macd_df["hist"], name="Histogram"))
             macd_fig.update_layout(height=250, title="MACD", margin=dict(t=30, b=10))
             st.plotly_chart(macd_fig, use_container_width=True)
+        with col3:
+            kd_df = ta.kd(df["High"], df["Low"], close)
+            kd_fig = go.Figure()
+            kd_fig.add_trace(go.Scatter(x=df.index, y=kd_df["k"], name="K"))
+            kd_fig.add_trace(go.Scatter(x=df.index, y=kd_df["d"], name="D"))
+            kd_fig.add_hline(y=80, line_dash="dash", line_color="red")
+            kd_fig.add_hline(y=20, line_dash="dash", line_color="green")
+            kd_fig.update_layout(height=250, title="KD (9)", margin=dict(t=30, b=10))
+            st.plotly_chart(kd_fig, use_container_width=True)
 
         latest = close.iloc[-1]
         prev = close.iloc[-2] if len(close) > 1 else latest

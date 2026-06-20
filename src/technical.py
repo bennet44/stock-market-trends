@@ -1,4 +1,5 @@
 """Technical indicator calculations."""
+import numpy as np
 import pandas as pd
 
 
@@ -33,3 +34,28 @@ def bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2.0) -
     upper = mid + num_std * std
     lower = mid - num_std * std
     return pd.DataFrame({"mid": mid, "upper": upper, "lower": lower})
+
+
+def kd(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 9) -> pd.DataFrame:
+    """Stochastic KD oscillator using the conventional Taiwan-market formula.
+
+    RSV is the close's position within the rolling high/low range; K and D
+    are then smoothed with a 1/3 weight on the latest value (2/3 on the
+    prior K/D), seeded at 50 for the first observation.
+    """
+    lowest_low = low.rolling(window).min()
+    highest_high = high.rolling(window).max()
+    rsv = (close - lowest_low) / (highest_high - lowest_low) * 100
+
+    k_values, d_values = [], []
+    prev_k, prev_d = 50.0, 50.0
+    for r in rsv:
+        if pd.isna(r):
+            k_values.append(np.nan)
+            d_values.append(np.nan)
+            continue
+        prev_k = prev_k * 2 / 3 + r / 3
+        prev_d = prev_d * 2 / 3 + prev_k / 3
+        k_values.append(prev_k)
+        d_values.append(prev_d)
+    return pd.DataFrame({"k": k_values, "d": d_values}, index=close.index)
