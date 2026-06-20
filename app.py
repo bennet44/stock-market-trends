@@ -101,7 +101,7 @@ with tab_overview:
         st.error(f"找不到 {primary} 的資料，請確認代號是否正確。")
     else:
         close = df["Close"]
-        sma20, sma50 = ta.sma(close, 20), ta.sma(close, 50)
+        sma5, sma10, sma20 = ta.sma(close, 5), ta.sma(close, 10), ta.sma(close, 20)
         bb = ta.bollinger_bands(close)
 
         st.caption("提示：將滑鼠移到圖上（手機點一下 K 棒）即可看到當天開盤／最高／最低／收盤價，不需開啟下方分析模式。")
@@ -110,13 +110,20 @@ with tab_overview:
             key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
         )
 
+        # "三竹股市" look for TW stocks: black background, 漲=red／跌=green
+        # candles (the reverse of the US green-up/red-down convention).
+        up_color, down_color = ("#ff3333", "#00b300") if is_tw else ("#2ca02c", "#d62728")
+
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
             name=primary_label,
+            increasing_line_color=up_color, increasing_fillcolor=up_color,
+            decreasing_line_color=down_color, decreasing_fillcolor=down_color,
         ))
-        fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1)))
-        fig.add_trace(go.Scatter(x=df.index, y=sma50, name="SMA50", line=dict(width=1)))
+        fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#ffffff")))
+        fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ffd700")))
+        fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#ff69b4")))
         fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="Bollinger Upper",
                                   line=dict(width=1, dash="dot"), opacity=0.5))
         fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="Bollinger Lower",
@@ -124,10 +131,26 @@ with tab_overview:
                                   fill="tonexty"))
         fig.update_layout(height=500, xaxis_rangeslider_visible=False,
                            margin=dict(t=20, b=20))
+        if is_tw:
+            fig.update_layout(
+                plot_bgcolor="#000000", paper_bgcolor="#000000",
+                font_color="#e0e0e0",
+                xaxis=dict(gridcolor="#333333"), yaxis=dict(gridcolor="#333333"),
+            )
         _render_chart(fig, analysis_mode)
 
-        vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume"))
+        vol_colors = [
+            up_color if c >= o else down_color
+            for o, c in zip(df["Open"], df["Close"])
+        ]
+        vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume", marker_color=vol_colors))
         vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
+        if is_tw:
+            vol_fig.update_layout(
+                plot_bgcolor="#000000", paper_bgcolor="#000000",
+                font_color="#e0e0e0",
+                xaxis=dict(gridcolor="#333333"), yaxis=dict(gridcolor="#333333"),
+            )
         _render_chart(vol_fig, analysis_mode)
 
         col1, col2, col3 = st.columns(3)
@@ -383,7 +406,7 @@ with tab_reco:
 
         def _column_config(df: pd.DataFrame) -> dict:
             config = {}
-            for col in _PCT_COLS + ["勝率(%)", "獲利%"]:
+            for col in _PCT_COLS + ["獲利%"]:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
             for col in _PLAIN_COLS:

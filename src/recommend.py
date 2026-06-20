@@ -129,17 +129,15 @@ def add_price_targets(
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
-    win_rates, profit_pcts, targets = [], [], []
+    profit_pcts, targets = [], []
     for t, p in zip(out.index, price):
         hist = dl.get_price_history(t, period=period)
         close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
         fwd_returns = close.pct_change(periods=PRICE_TARGET_HOLD_DAYS).dropna()
         subset = fwd_returns[fwd_returns > 0] if side == "buy" else fwd_returns[fwd_returns < 0]
         move = np.percentile(subset, 100 - win_rate_pct) if not subset.empty else None
-        win_rates.append(win_rate_pct if move is not None else None)
         profit_pcts.append(move * 100 if move is not None else None)
         targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
-    out["勝率(%)"] = win_rates
     out["獲利%"] = profit_pcts
     if side == "buy":
         out["建議買入價"] = price
