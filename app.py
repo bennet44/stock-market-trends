@@ -117,6 +117,18 @@ def _display_name(ticker: str) -> str:
     return f"{ticker}({name})" if name else ticker
 
 
+def _signal_color(side: str, win_rate: float | None) -> str:
+    """CSS color for the merged table's buy/sell dot: green for buy, red for
+    sell, shaded by 未來勝率 (higher win rate → deeper, more saturated colour)
+    over a 0–40% range. Returns a `color: rgb(...)` declaration."""
+    f = min(max((win_rate or 0) / 40.0, 0.0), 1.0)
+    if side == "buy":  # light green -> dark green
+        r, g, b = int(190 - 190 * f), int(225 - 105 * f), int(190 - 190 * f)
+    else:              # light red -> dark red
+        r, g, b = int(245 - 75 * f), int(190 - 190 * f), int(190 - 190 * f)
+    return f"color: rgb({r},{g},{b})"
+
+
 def _render_chart(fig: go.Figure, analysis_mode: bool = False) -> None:
     """Render a Plotly chart.
 
@@ -547,7 +559,10 @@ with tab_reco:
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
         _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                        "RSI (14)", "綜合評分"]
-        _PRICE_COLS = ["建議買入價", "建議賣出價", "目標賣出價", "逢低買回參考價"]
+        _PRICE_COLS = ["進場價", "目標價"]
+        _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/SMA50)", "Sharpe Ratio",
+                      "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
+                      "進場價", "目標價", "獲利%", "歷史勝率", "未來勝率", "原因說明"]
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
             fmt = df.copy()
@@ -557,8 +572,8 @@ with tab_reco:
             return fmt
 
         def _column_config(df: pd.DataFrame) -> dict:
-            config = {}
-            # 獲利% and 歷史勝率 are already stored as percentages (not fractions),
+            config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表未來勝率越高。")}
+            # 獲利% and 歷史/未來勝率 are already stored as percentages (not fractions),
             # so they only get the %% format, not the *100 in _format_reco.
             for col in _PCT_COLS + ["獲利%", "歷史勝率", "未來勝率"]:
                 if col in df:
@@ -571,15 +586,31 @@ with tab_reco:
                     config[col] = st.column_config.NumberColumn(col, format=f"{currency}%.2f")
             return config
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"#### 🟢 建議買入 Top {len(buy_df)}")
-            fmt_buy = _format_reco(buy_df)
-            st.dataframe(fmt_buy, use_container_width=True, column_config=_column_config(fmt_buy))
-        with col2:
-            st.markdown(f"#### 🔴 建議賣出 Top {len(sell_df)}")
-            fmt_sell = _format_reco(sell_df)
-            st.dataframe(fmt_sell, use_container_width=True, column_config=_column_config(fmt_sell))
+        # Merge buy + sell into one table: unify the two side-specific price
+        # columns to 進場價/目標價, prepend a 建議 dot, and keep buys (high score)
+        # above sells. The dot is coloured green (buy) / red (sell) and shaded
+        # by 未來勝率 via a Styler.
+        buy_u = buy_df.rename(columns={"建議買入價": "進場價", "目標賣出價": "目標價"})
+        sell_u = sell_df.rename(columns={"建議賣出價": "進場價", "逢低買回參考價": "目標價"})
+        buy_u["建議"] = "●"
+        sell_u["建議"] = "●"
+        merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])
+        merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
+        _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
+        _future = merged["未來勝率"].tolist() if "未來勝率" in merged else [None] * len(merged)
+
+        def _signal_styles(df: pd.DataFrame) -> pd.DataFrame:
+            css = pd.DataFrame("", index=df.index, columns=df.columns)
+            loc = df.columns.get_loc("建議")
+            for i, (side, w) in enumerate(zip(_sides, _future)):
+                css.iloc[i, loc] = _signal_color(side, w) + "; text-align: center; font-size: 20px"
+            return css
+
+        st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔　— 圓點顏色越深＝未來勝率越高")
+        st.dataframe(
+            merged.style.apply(_signal_styles, axis=None),
+            use_container_width=True, column_config=_column_config(merged),
+        )
 
         if len(buy_df) < top_n:
             st.info(
