@@ -14,13 +14,36 @@ from . import news as news_mod
 from . import risk as risk_mod
 from . import technical as ta
 
-FACTOR_WEIGHTS = {
-    "期間報酬率": 0.25,
-    "Sharpe Ratio": 0.25,
-    "趨勢(價格/SMA50)": 0.15,
-    "估值(1/預估PE)": 0.15,
-    "新聞情緒": 0.2,
+# Composite-score factor weights, switched by the chosen horizon: a 1-day scan
+# and a 5-year scan shouldn't value the same things. Short windows lean on price
+# action / news momentum and all but ignore valuation (fundamentals barely move
+# a stock in days); long windows lean on valuation and risk-adjusted return and
+# discount short-term momentum / headline sentiment. Each row sums to 1.0.
+FACTOR_WEIGHTS_BY_HORIZON = {
+    "short": {
+        "期間報酬率": 0.30,
+        "Sharpe Ratio": 0.15,
+        "趨勢(價格/SMA50)": 0.25,
+        "估值(1/預估PE)": 0.05,
+        "新聞情緒": 0.25,
+    },
+    "medium": {
+        "期間報酬率": 0.25,
+        "Sharpe Ratio": 0.25,
+        "趨勢(價格/SMA50)": 0.15,
+        "估值(1/預估PE)": 0.15,
+        "新聞情緒": 0.20,
+    },
+    "long": {
+        "期間報酬率": 0.15,
+        "Sharpe Ratio": 0.30,
+        "趨勢(價格/SMA50)": 0.10,
+        "估值(1/預估PE)": 0.30,
+        "新聞情緒": 0.15,
+    },
 }
+# Default / backward-compatible weights when no horizon is specified.
+FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 
 _NEWS_FETCH_WORKERS = 12
 
@@ -48,7 +71,7 @@ def _news_sentiment(ticker: str, company_name: str | None) -> float:
 
 def build_recommendation_table(
     tickers: list[str], period: str, risk_free_rate: float = 0.0,
-    lookback_days: int | None = None,
+    lookback_days: int | None = None, weights: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Score each ticker into a cross-sectional composite rank.
 
@@ -57,8 +80,10 @@ def build_recommendation_table(
     (期間報酬率, Sharpe, etc.) can be shorter than any yfinance period supports
     (e.g. 1天/1週); None uses the full fetched window. Indicators needing more
     bars than the window holds (e.g. SMA50, RSI) simply come back NaN and drop
-    out of the scoring.
+    out of the scoring. weights selects the per-factor weighting (see
+    FACTOR_WEIGHTS_BY_HORIZON); None falls back to the medium-horizon default.
     """
+    weights = weights or FACTOR_WEIGHTS
     rows = {}
     company_names = {}
     for t in tickers:
@@ -100,7 +125,7 @@ def build_recommendation_table(
         return table
 
     score = pd.Series(0.0, index=table.index)
-    for factor, weight in FACTOR_WEIGHTS.items():
+    for factor, weight in weights.items():
         contribution = _zscore(table[factor].astype(float)) * weight
         table[_CONTRIB_PREFIX + factor] = contribution
         score = score + contribution

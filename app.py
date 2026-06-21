@@ -51,19 +51,24 @@ PERIOD_OPTIONS = {
 # fetched window, matching PERIOD_OPTIONS. The fetched window is also what feeds
 # the win-rate price-target distribution, so the short options keep a 1個月 fetch
 # to retain enough forward-return samples for that.
+# Each option also declares a horizon bucket (short/medium/long) so the
+# composite-score factor weights auto-switch with the chosen window — short
+# windows lean on momentum/news, long windows on valuation/risk-adjusted return
+# (see recommend.FACTOR_WEIGHTS_BY_HORIZON).
 RECO_PERIOD_OPTIONS = {
-    "1天": {"fetch": "1mo", "lookback": 1},
-    "3天": {"fetch": "1mo", "lookback": 3},
-    "1週": {"fetch": "1mo", "lookback": 5},
-    "2週": {"fetch": "1mo", "lookback": 10},
-    "1個月": {"fetch": "1mo", "lookback": None},
-    "3個月": {"fetch": "3mo", "lookback": None},
-    "6個月": {"fetch": "6mo", "lookback": None},
-    "1年": {"fetch": "1y", "lookback": None},
-    "2年": {"fetch": "2y", "lookback": None},
-    "5年": {"fetch": "5y", "lookback": None},
-    "今年至今(YTD)": {"fetch": "ytd", "lookback": None},
+    "1天": {"fetch": "1mo", "lookback": 1, "horizon": "short"},
+    "3天": {"fetch": "1mo", "lookback": 3, "horizon": "short"},
+    "1週": {"fetch": "1mo", "lookback": 5, "horizon": "short"},
+    "2週": {"fetch": "1mo", "lookback": 10, "horizon": "short"},
+    "1個月": {"fetch": "1mo", "lookback": None, "horizon": "short"},
+    "3個月": {"fetch": "3mo", "lookback": None, "horizon": "medium"},
+    "6個月": {"fetch": "6mo", "lookback": None, "horizon": "medium"},
+    "1年": {"fetch": "1y", "lookback": None, "horizon": "long"},
+    "2年": {"fetch": "2y", "lookback": None, "horizon": "long"},
+    "5年": {"fetch": "5y", "lookback": None, "horizon": "long"},
+    "今年至今(YTD)": {"fetch": "ytd", "lookback": None, "horizon": "medium"},
 }
+_HORIZON_LABEL = {"short": "短期", "medium": "中期", "long": "長期"}
 # Charts that render one trace/row per ticker (comparison overlay, correlation
 # heatmap, distribution histogram) become unreadable and slow past this many
 # tickers, so those views are capped — tables and the recommendation scan
@@ -430,6 +435,8 @@ with tab_reco:
         period_spec = RECO_PERIOD_OPTIONS[period_label]
         period = period_spec["fetch"]
         reco_lookback = period_spec["lookback"]
+        reco_horizon = period_spec["horizon"]
+        reco_weights = recommend.FACTOR_WEIGHTS_BY_HORIZON[reco_horizon]
     with col_winrate3:
         win_rate_pct3 = st.number_input(
             "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5,
@@ -450,10 +457,17 @@ with tab_reco:
         "估值(1/預估PE)": "估值（1/預估PE）",
         "新聞情緒": "新聞情緒（近4日中文標題）",
     }
-    st.markdown("**綜合評分 ＝ 下列五大因子加權（占比如下）**")
+    st.markdown(
+        f"**綜合評分 ＝ 下列五大因子加權（占比如下）**　"
+        f"已依「時間期間」自動切換為 **{_HORIZON_LABEL[reco_horizon]}** 權重"
+    )
     _fcols = st.columns(len(_FACTOR_DISPLAY))
     for _c, (_k, _label) in zip(_fcols, _FACTOR_DISPLAY.items()):
-        _c.metric(_label, f"{recommend.FACTOR_WEIGHTS[_k] * 100:.0f}%")
+        _c.metric(_label, f"{reco_weights[_k] * 100:.0f}%")
+    st.caption(
+        "短期（≤1個月）重視價格動能與消息面、淡化估值；長期（≥1年）重視估值與風險調整報酬、"
+        "淡化短線動能；中期（3個月～半年、YTD）則居中平衡。"
+    )
 
     st.subheader("基金經理人觀點：建議買入 / 賣出")
     if is_tw:
@@ -472,7 +486,8 @@ with tab_reco:
         reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
         reco_table = recommend.build_recommendation_table(
-            reco_universe, period, DEFAULT_RISK_FREE_RATE, lookback_days=reco_lookback)
+            reco_universe, period, DEFAULT_RISK_FREE_RATE,
+            lookback_days=reco_lookback, weights=reco_weights)
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認時間期間。")
     else:
