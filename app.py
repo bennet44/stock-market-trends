@@ -78,6 +78,10 @@ MAX_CHART_TICKERS = 30
 # input now lives on the recommendation tab), so its Sharpe Ratio uses this
 # fixed default instead.
 DEFAULT_RISK_FREE_RATE = 0.04
+# The 買賣建議 tab no longer asks the user to set a target win rate; the buy/sell
+# target prices use this fixed reference percentile, and the table instead shows
+# each stock's *computed* 歷史勝率 for the user to judge against.
+RECO_TARGET_WIN_RATE = 60
 # Holding-period choices for Tab 1's win-rate-based buy/sell price reference:
 # trading days drive the historical return distribution, calendar days drive
 # the displayed "query date ~ target date" label.
@@ -442,7 +446,7 @@ with tab_compare_risk:
 
 # ---------- Tab 3: Buy/sell recommendations ----------
 with tab_reco:
-    col_period3, col_winrate3, col_topn = st.columns(3)
+    col_period3, col_topn = st.columns(2)
     with col_period3:
         period_label = st.selectbox(
             "時間期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
@@ -454,12 +458,6 @@ with tab_reco:
         reco_lookback = period_spec["lookback"]
         reco_horizon = period_spec["horizon"]
         reco_weights = recommend.FACTOR_WEIGHTS_BY_HORIZON[reco_horizon]
-    with col_winrate3:
-        win_rate_pct3 = st.number_input(
-            "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5,
-            key=f"win_rate_tab3_{'tw' if is_tw else 'us'}",
-            help="以歷史上漲／下跌期間的報酬率分布，反推在此勝率下對應的漲跌幅。",
-        )
     with col_topn:
         top_n = st.selectbox(
             "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_tab3_{'tw' if is_tw else 'us'}"
@@ -500,7 +498,8 @@ with tab_reco:
         f"- **篩選範圍**：{scope_desc}\n"
         "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
         "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
-        "- **買賣價**：以最新收盤價估算；目標價依設定勝率反推歷史報酬率分布，未計入基本面與市況\n"
+        "- **買賣價**：以最新收盤價估算，目標價依歷史報酬率分布推算（持有約 1 週）\n"
+        "- **歷史勝率**：該股歷史上持有約 1 週「上漲（買入）／下跌（賣出）」的比例，供你依個人喜好判斷\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序"
     )
     if is_tw:
@@ -516,9 +515,9 @@ with tab_reco:
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
-            recommend.add_price_targets(buy_df, "buy", currency, win_rate_pct3, period), "buy")
+            recommend.add_price_targets(buy_df, "buy", currency, RECO_TARGET_WIN_RATE, period), "buy")
         sell_df = recommend.add_reason(
-            recommend.add_price_targets(sell_df, "sell", currency, win_rate_pct3, period), "sell")
+            recommend.add_price_targets(sell_df, "sell", currency, RECO_TARGET_WIN_RATE, period), "sell")
 
         _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
@@ -535,7 +534,9 @@ with tab_reco:
 
         def _column_config(df: pd.DataFrame) -> dict:
             config = {}
-            for col in _PCT_COLS + ["獲利%"]:
+            # 獲利% and 歷史勝率 are already stored as percentages (not fractions),
+            # so they only get the %% format, not the *100 in _format_reco.
+            for col in _PCT_COLS + ["獲利%", "歷史勝率"]:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
             for col in _PLAIN_COLS:

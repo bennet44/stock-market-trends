@@ -237,7 +237,7 @@ def add_price_targets(
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
-    profit_pcts, targets = [], []
+    profit_pcts, targets, win_rates = [], [], []
     for t, p in zip(out.index, price):
         hist = dl.get_price_history(t, period=period)
         close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
@@ -246,6 +246,10 @@ def add_price_targets(
         move = np.percentile(subset, 100 - win_rate_pct) if not subset.empty else None
         profit_pcts.append(move * 100 if move is not None else None)
         targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
+        # Per-stock historical 勝率: how often a PRICE_TARGET_HOLD_DAYS-day hold
+        # moved the "right" way for this side (up for buy, down for sell) — a
+        # stock-specific directional hit rate the user can judge against.
+        win_rates.append(len(subset) / len(fwd_returns) * 100 if len(fwd_returns) else None)
     out["獲利%"] = profit_pcts
     if side == "buy":
         out["建議買入價"] = price
@@ -253,6 +257,7 @@ def add_price_targets(
     else:
         out["建議賣出價"] = price
         out["逢低買回參考價"] = targets
+    out["歷史勝率"] = win_rates  # placed last so it sits just before 原因說明
     return out.drop(columns=["最新收盤價"])
 
 
