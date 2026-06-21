@@ -40,6 +40,28 @@ for _k, _v in _saved_settings.items():
     if _k not in st.session_state and _k not in _PERSIST_EXCLUDE_KEYS:
         st.session_state[_k] = _v
 
+# Ticker fields (Tab1/2/4) are excluded from the auto-save-every-rerun
+# behavior above and instead only persist when the user presses that tab's
+# own "💾 儲存" button — typing a ticker is a frequent, often exploratory
+# action, so silently remembering every keystroke is more surprising than
+# helpful here. Stored under a separate localStorage key so it round-trips
+# independently of the auto-saved settings above.
+_TICKER_STORAGE_KEY = "saved_tickers"
+_MANUAL_TICKER_PREFIXES = ("price_ticker_", "compare_input_", "fcn_tickers_")
+_saved_tickers_raw = _local_storage.getItem(_TICKER_STORAGE_KEY)
+try:
+    _saved_tickers = json.loads(_saved_tickers_raw) if _saved_tickers_raw else {}
+except (TypeError, ValueError):
+    _saved_tickers = {}
+for _k, _v in _saved_tickers.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+
+def _save_ticker_field(key: str, value: str) -> None:
+    _saved_tickers[key] = value
+    _local_storage.setItem(_TICKER_STORAGE_KEY, json.dumps(_saved_tickers), key=f"save_{key}")
+
 PERIOD_OPTIONS = {
     "1個月": "1mo", "3個月": "3mo", "6個月": "6mo",
     "1年": "1y", "2年": "2y", "5年": "5y",
@@ -119,7 +141,7 @@ tab_overview, tab_compare_risk, tab_reco, tab_fcn = st.tabs(
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
 with tab_overview:
-    col_ticker, col_period = st.columns([2, 1])
+    col_ticker, col_save, col_period = st.columns([2, 0.4, 1])
     with col_ticker:
         if is_tw:
             default_ticker = "2330"
@@ -127,10 +149,16 @@ with tab_overview:
         else:
             default_ticker = "AAPL"
             ticker_label = "股票代號"
+        _ticker1_key = f"price_ticker_{'tw' if is_tw else 'us'}"
         raw_primary = st.text_input(
-            ticker_label, value=default_ticker, key=f"price_ticker_{'tw' if is_tw else 'us'}"
+            ticker_label, value=default_ticker, key=_ticker1_key
         ).strip().upper() or default_ticker
         primary = universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary
+    with col_save:
+        st.write("")
+        if st.button("💾 儲存", key=f"save_btn_{_ticker1_key}", help="儲存目前的股票代號，下次開啟時自動帶入"):
+            _save_ticker_field(_ticker1_key, raw_primary)
+            st.toast(f"已儲存股票代號：{raw_primary}")
     with col_period:
         period_label = st.selectbox(
             "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab1_{'tw' if is_tw else 'us'}"
@@ -306,7 +334,7 @@ with tab_overview:
 
 # ---------- Tab 2: Multi-stock comparison, correlation & risk stats ----------
 with tab_compare_risk:
-    col_compare, col_period2 = st.columns([2, 1])
+    col_compare, col_save2, col_period2 = st.columns([2, 0.4, 1])
     with col_compare:
         if is_tw:
             compare_label = "比較用股票代號（逗號分隔，台股代碼；留空代表全部台股觀察清單，含ETF及個股）"
@@ -314,8 +342,14 @@ with tab_compare_risk:
         else:
             compare_label = "比較用股票代號（逗號分隔；留空代表全部 S&P 500 成分股）"
             compare_default = "AAPL, OKLO"
+        _ticker2_key = f"compare_input_{'tw' if is_tw else 'us'}"
         compare_input = st.text_input(
-            compare_label, value=compare_default, key=f"compare_input_{'tw' if is_tw else 'us'}")
+            compare_label, value=compare_default, key=_ticker2_key)
+    with col_save2:
+        st.write("")
+        if st.button("💾 儲存", key=f"save_btn_{_ticker2_key}", help="儲存目前的股票代號清單，下次開啟時自動帶入"):
+            _save_ticker_field(_ticker2_key, compare_input)
+            st.toast(f"已儲存股票代號清單：{compare_input}")
     with col_period2:
         period_label = st.selectbox(
             "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab2_{'tw' if is_tw else 'us'}"
@@ -497,7 +531,7 @@ with tab_fcn:
         "未涉及實際發行商報價、信用風險或手續費，**僅供研究參考，非投資建議**。"
     )
 
-    col_n_assets, col_tickers = st.columns([1, 3])
+    col_n_assets, col_tickers, col_save4 = st.columns([1, 3, 0.4])
     with col_n_assets:
         n_assets = st.number_input(
             "標的數量", min_value=1, max_value=FCN_MAX_ASSETS, value=1, step=1,
@@ -508,9 +542,15 @@ with tab_fcn:
             (["2330", "2317", "2454", "2412", "2882"] if is_tw else ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"])[:n_assets]
         )
         fcn_ticker_label = f"標的股票代號（共 {n_assets} 個，以「,」區隔）" + ("（台股代碼，例如 2330）" if is_tw else "")
+        _ticker4_key = f"fcn_tickers_{'tw' if is_tw else 'us'}_{n_assets}"
         fcn_raw_tickers = st.text_input(
-            fcn_ticker_label, value=fcn_default_tickers, key=f"fcn_tickers_{'tw' if is_tw else 'us'}_{n_assets}"
+            fcn_ticker_label, value=fcn_default_tickers, key=_ticker4_key
         )
+    with col_save4:
+        st.write("")
+        if st.button("💾 儲存", key=f"save_btn_{_ticker4_key}", help="儲存目前的標的股票代號，下次開啟時自動帶入"):
+            _save_ticker_field(_ticker4_key, fcn_raw_tickers)
+            st.toast(f"已儲存標的股票代號：{fcn_raw_tickers}")
     fcn_tickers_input = [t.strip().upper() for t in fcn_raw_tickers.split(",") if t.strip()]
     fcn_tickers = [universe.resolve_tw_ticker(t) for t in fcn_tickers_input] if is_tw else fcn_tickers_input
 
@@ -642,10 +682,12 @@ with tab_fcn:
 
 # Snapshot every widget's current value back into the browser's localStorage
 # (overwriting the dict loaded at startup) so it's there on the next visit.
-# Excludes the local-storage component's own bookkeeping keys and "market"
-# (see _PERSIST_EXCLUDE_KEYS above).
+# Excludes the local-storage component's own bookkeeping keys, "market" (see
+# _PERSIST_EXCLUDE_KEYS above), and the manually-saved ticker fields (see
+# _MANUAL_TICKER_PREFIXES above).
 _settings_to_save = {
     k: v for k, v in st.session_state.items()
     if k != "storage_init" and not k.startswith("save_") and k not in _PERSIST_EXCLUDE_KEYS
+    and not k.startswith(_MANUAL_TICKER_PREFIXES)
 }
 _local_storage.setItem(_SETTINGS_STORAGE_KEY, json.dumps(_settings_to_save), key="save_dashboard_settings")
