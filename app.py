@@ -441,19 +441,30 @@ with tab_reco:
             "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_tab3_{'tw' if is_tw else 'us'}"
         )
 
+    # 綜合評分的五大因子占比，緊接在「時間期間」等控制項下方一列呈現。
+    # 權重取自 recommend.FACTOR_WEIGHTS，避免與實際評分邏輯不同步。
+    _FACTOR_DISPLAY = {
+        "期間報酬率": "期間報酬率",
+        "Sharpe Ratio": "Sharpe（風險調整報酬）",
+        "趨勢(價格/SMA50)": "價格趨勢（價格/SMA50）",
+        "估值(1/預估PE)": "估值（1/預估PE）",
+        "新聞情緒": "新聞情緒（近4日中文標題）",
+    }
+    st.markdown("**綜合評分 ＝ 下列五大因子加權（占比如下）**")
+    _fcols = st.columns(len(_FACTOR_DISPLAY))
+    for _c, (_k, _label) in zip(_fcols, _FACTOR_DISPLAY.items()):
+        _c.metric(_label, f"{recommend.FACTOR_WEIGHTS[_k] * 100:.0f}%")
+
     st.subheader("基金經理人觀點：建議買入 / 賣出")
     if is_tw:
-        scope_desc = "篩選範圍為「台股觀察清單（含ETF及個股）」。"
+        scope_desc = "「台股觀察清單（含 ETF 及個股）」"
     else:
-        scope_desc = "篩選範圍為「美股交易量前 30 大（依近期平均成交量排序的觀察名單）」與「S&P 500 成分股」的聯集。"
+        scope_desc = "「美股近期成交量前 30 大」與「S&P 500 成分股」的聯集"
     st.caption(
-        scope_desc +
-        "綜合「期間報酬率」「Sharpe Ratio」"
-        "「價格趨勢（價格 / SMA50）」「估值（1/預估PE）」"
-        "「新聞情緒（近 4 日中文新聞標題關鍵字判斷）」五項因子計算組內相對評分，"
-        "僅反映目前範圍內標的之相對排序，非投資建議。"
-        "買入價／賣出價以最新收盤價估算，目標漲跌幅依設定勝率反推歷史報酬率分布，"
-        "未考慮基本面或市場狀況，僅供參考。各欄位可點選表頭由大至小／小至大排序。"
+        f"- **篩選範圍**：{scope_desc}\n"
+        "- **評分方式**：上列五因子計算「組內相對排序」，僅反映目前範圍內標的相對高低，非投資建議\n"
+        "- **買賣價**：以最新收盤價估算；目標價依設定勝率反推歷史報酬率分布，未計入基本面與市況\n"
+        "- **操作**：點各欄表頭可由大至小／小至大排序"
     )
     if is_tw:
         reco_universe = universe.get_twse_tickers()
