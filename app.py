@@ -44,6 +44,25 @@ PERIOD_OPTIONS = {
     "1個月": "1mo", "3個月": "3mo", "6個月": "6mo",
     "1年": "1y", "2年": "2y", "5年": "5y",
 }
+# The 買賣建議 tab offers extra short windows (1天～2週). yfinance's `period`
+# can't express those (and "1d" returns a single daily bar — too few to derive
+# a return), so each option pairs a safe fetch period with the number of recent
+# trading days to slice for the scoring lookback. "lookback" None = use the full
+# fetched window, matching PERIOD_OPTIONS. The fetched window is also what feeds
+# the win-rate price-target distribution, so the short options keep a 1個月 fetch
+# to retain enough forward-return samples for that.
+RECO_PERIOD_OPTIONS = {
+    "1天": {"fetch": "1mo", "lookback": 1},
+    "3天": {"fetch": "1mo", "lookback": 3},
+    "1週": {"fetch": "1mo", "lookback": 5},
+    "2週": {"fetch": "1mo", "lookback": 10},
+    "1個月": {"fetch": "1mo", "lookback": None},
+    "3個月": {"fetch": "3mo", "lookback": None},
+    "6個月": {"fetch": "6mo", "lookback": None},
+    "1年": {"fetch": "1y", "lookback": None},
+    "2年": {"fetch": "2y", "lookback": None},
+    "5年": {"fetch": "5y", "lookback": None},
+}
 # Charts that render one trace/row per ticker (comparison overlay, correlation
 # heatmap, distribution histogram) become unreadable and slow past this many
 # tickers, so those views are capped — tables and the recommendation scan
@@ -403,9 +422,11 @@ with tab_reco:
     col_period3, col_winrate3, col_topn = st.columns(3)
     with col_period3:
         period_label = st.selectbox(
-            "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab3_{'tw' if is_tw else 'us'}"
+            "時間範圍", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}"
         )
-        period = PERIOD_OPTIONS[period_label]
+        period_spec = RECO_PERIOD_OPTIONS[period_label]
+        period = period_spec["fetch"]
+        reco_lookback = period_spec["lookback"]
     with col_winrate3:
         win_rate_pct3 = st.number_input(
             "設定勝率 (%)", min_value=50, max_value=95, value=60, step=5,
@@ -436,7 +457,8 @@ with tab_reco:
     else:
         reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
-        reco_table = recommend.build_recommendation_table(reco_universe, period, DEFAULT_RISK_FREE_RATE)
+        reco_table = recommend.build_recommendation_table(
+            reco_universe, period, DEFAULT_RISK_FREE_RATE, lookback_days=reco_lookback)
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認時間範圍。")
     else:

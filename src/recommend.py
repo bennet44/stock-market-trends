@@ -46,7 +46,19 @@ def _news_sentiment(ticker: str, company_name: str | None) -> float:
     return news_mod.news_sentiment_score(items)
 
 
-def build_recommendation_table(tickers: list[str], period: str, risk_free_rate: float = 0.0) -> pd.DataFrame:
+def build_recommendation_table(
+    tickers: list[str], period: str, risk_free_rate: float = 0.0,
+    lookback_days: int | None = None,
+) -> pd.DataFrame:
+    """Score each ticker into a cross-sectional composite rank.
+
+    period is the yfinance window to fetch. lookback_days, when given, trims
+    the fetched closes to that many recent trading days so the scoring window
+    (期間報酬率, Sharpe, etc.) can be shorter than any yfinance period supports
+    (e.g. 1天/1週); None uses the full fetched window. Indicators needing more
+    bars than the window holds (e.g. SMA50, RSI) simply come back NaN and drop
+    out of the scoring.
+    """
     rows = {}
     company_names = {}
     for t in tickers:
@@ -54,6 +66,10 @@ def build_recommendation_table(tickers: list[str], period: str, risk_free_rate: 
         if df.empty or len(df) < 2:
             continue
         close = df["Close"]
+        if lookback_days is not None:
+            close = close.iloc[-(lookback_days + 1):]
+            if len(close) < 2:
+                continue
         rets = risk_mod.daily_returns(close)
         sma50 = ta.sma(close, 50).iloc[-1]
         info = dl.get_company_info(t)
