@@ -131,9 +131,27 @@ def _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drifts, corr, risk_
     )
 
 
-market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
+col_market, col_save_tickers = st.columns([4, 1])
+with col_market:
+    market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
+
+with col_save_tickers:
+    st.write("")
+    if st.button(
+        "💾 儲存目前股票代號", help="把 Page1/2/4 目前輸入的股票代號儲存起來，下次開啟時自動帶入"
+    ):
+        _suffix = "tw" if is_tw else "us"
+        _n_assets_now = st.session_state.get(f"fcn_n_assets_{_suffix}", 1)
+        for _tk in (
+            f"price_ticker_{_suffix}",
+            f"compare_input_{_suffix}",
+            f"fcn_tickers_{_suffix}_{_n_assets_now}",
+        ):
+            if _tk in st.session_state:
+                _save_ticker_field(_tk, st.session_state[_tk])
+        st.toast("已儲存目前股票代號設定")
 
 tab_overview, tab_compare_risk, tab_reco, tab_fcn = st.tabs(
     ["📈 價格、技術指標與基本面", "🔗 多股比較、相關性與風險統計", "💡 買賣建議", "📐 FCN風險評估"]
@@ -141,7 +159,7 @@ tab_overview, tab_compare_risk, tab_reco, tab_fcn = st.tabs(
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
 with tab_overview:
-    col_ticker, col_save, col_period = st.columns([2, 0.4, 1])
+    col_ticker, col_period = st.columns([2, 1])
     with col_ticker:
         if is_tw:
             default_ticker = "2330"
@@ -149,16 +167,10 @@ with tab_overview:
         else:
             default_ticker = "AAPL"
             ticker_label = "股票代號"
-        _ticker1_key = f"price_ticker_{'tw' if is_tw else 'us'}"
         raw_primary = st.text_input(
-            ticker_label, value=default_ticker, key=_ticker1_key
+            ticker_label, value=default_ticker, key=f"price_ticker_{'tw' if is_tw else 'us'}"
         ).strip().upper() or default_ticker
         primary = universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary
-    with col_save:
-        st.write("")
-        if st.button("💾 儲存", key=f"save_btn_{_ticker1_key}", help="儲存目前的股票代號，下次開啟時自動帶入"):
-            _save_ticker_field(_ticker1_key, raw_primary)
-            st.toast(f"已儲存股票代號：{raw_primary}")
     with col_period:
         period_label = st.selectbox(
             "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab1_{'tw' if is_tw else 'us'}"
@@ -334,7 +346,7 @@ with tab_overview:
 
 # ---------- Tab 2: Multi-stock comparison, correlation & risk stats ----------
 with tab_compare_risk:
-    col_compare, col_save2, col_period2 = st.columns([2, 0.4, 1])
+    col_compare, col_period2 = st.columns([2, 1])
     with col_compare:
         if is_tw:
             compare_label = "比較用股票代號（逗號分隔，台股代碼；留空代表全部台股觀察清單，含ETF及個股）"
@@ -342,14 +354,8 @@ with tab_compare_risk:
         else:
             compare_label = "比較用股票代號（逗號分隔；留空代表全部 S&P 500 成分股）"
             compare_default = "AAPL, OKLO"
-        _ticker2_key = f"compare_input_{'tw' if is_tw else 'us'}"
         compare_input = st.text_input(
-            compare_label, value=compare_default, key=_ticker2_key)
-    with col_save2:
-        st.write("")
-        if st.button("💾 儲存", key=f"save_btn_{_ticker2_key}", help="儲存目前的股票代號清單，下次開啟時自動帶入"):
-            _save_ticker_field(_ticker2_key, compare_input)
-            st.toast(f"已儲存股票代號清單：{compare_input}")
+            compare_label, value=compare_default, key=f"compare_input_{'tw' if is_tw else 'us'}")
     with col_period2:
         period_label = st.selectbox(
             "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab2_{'tw' if is_tw else 'us'}"
@@ -531,7 +537,7 @@ with tab_fcn:
         "未涉及實際發行商報價、信用風險或手續費，**僅供研究參考，非投資建議**。"
     )
 
-    col_n_assets, col_tickers, col_save4 = st.columns([1, 3, 0.4])
+    col_n_assets, col_tickers = st.columns([1, 3])
     with col_n_assets:
         n_assets = st.number_input(
             "標的數量", min_value=1, max_value=FCN_MAX_ASSETS, value=1, step=1,
@@ -542,15 +548,9 @@ with tab_fcn:
             (["2330", "2317", "2454", "2412", "2882"] if is_tw else ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"])[:n_assets]
         )
         fcn_ticker_label = f"標的股票代號（共 {n_assets} 個，以「,」區隔）" + ("（台股代碼，例如 2330）" if is_tw else "")
-        _ticker4_key = f"fcn_tickers_{'tw' if is_tw else 'us'}_{n_assets}"
         fcn_raw_tickers = st.text_input(
-            fcn_ticker_label, value=fcn_default_tickers, key=_ticker4_key
+            fcn_ticker_label, value=fcn_default_tickers, key=f"fcn_tickers_{'tw' if is_tw else 'us'}_{n_assets}"
         )
-    with col_save4:
-        st.write("")
-        if st.button("💾 儲存", key=f"save_btn_{_ticker4_key}", help="儲存目前的標的股票代號，下次開啟時自動帶入"):
-            _save_ticker_field(_ticker4_key, fcn_raw_tickers)
-            st.toast(f"已儲存標的股票代號：{fcn_raw_tickers}")
     fcn_tickers_input = [t.strip().upper() for t in fcn_raw_tickers.split(",") if t.strip()]
     fcn_tickers = [universe.resolve_tw_ticker(t) for t in fcn_tickers_input] if is_tw else fcn_tickers_input
 
