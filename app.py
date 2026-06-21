@@ -5,6 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 from streamlit_local_storage import LocalStorage
 
@@ -16,7 +17,41 @@ from src import risk
 from src import technical as ta
 from src import universe
 
-st.set_page_config(page_title="美股分析師看板", layout="wide")
+st.set_page_config(page_title="股市分析師看板", layout="wide", page_icon="📈")
+
+# Dark-themed Plotly charts so they blend with the dark page (candlestick's
+# explicit red/green colours are unaffected).
+pio.templates.default = "plotly_dark"
+
+# Cohesive dark-dashboard polish: tighter spacing, carded metrics/tabs, capped
+# dropdown width, rounded tables. Pure presentation — no behaviour change.
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1480px; }
+      /* Dropdowns / number inputs: cap width so they don't stretch full-row */
+      div[data-baseweb="select"], div[data-testid="stNumberInput"] { max-width: 360px; }
+      div[data-baseweb="select"] > div { border-radius: 8px; border-color: #2a3342; }
+      /* Tabs as carded pills with an accent on the active one */
+      .stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid #232b38; }
+      .stTabs [data-baseweb="tab"] {
+        background: #141a23; border-radius: 10px 10px 0 0; padding: 8px 18px; font-weight: 600;
+      }
+      .stTabs [aria-selected="true"] { background: #1c2530; border-bottom: 3px solid #3da5ff; }
+      /* Metric cards */
+      div[data-testid="stMetric"] {
+        background: #161c26; border: 1px solid #232b38; border-radius: 14px; padding: 14px 18px;
+      }
+      div[data-testid="stMetricLabel"] p { opacity: .75; font-size: .85rem; }
+      /* Rounded dataframes + radio row */
+      div[data-testid="stDataFrame"] { border: 1px solid #232b38; border-radius: 12px; overflow: hidden; }
+      div[role="radiogroup"] { gap: .4rem; }
+      h3 { margin-top: .3rem; letter-spacing: .2px; }
+      hr { margin: 1.1rem 0; border-color: #232b38; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Persist every tab's widget settings/inputs in the visitor's browser
 # (localStorage) so they're restored next time the same browser opens the
@@ -215,10 +250,10 @@ with tab_overview:
             key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
         )
 
-        # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the
-        # reverse of the US green-up/red-down convention); background stays
-        # white to match the US chart.
-        up_color, down_color = ("#ff3333", "#00b300") if is_tw else ("#2ca02c", "#d62728")
+        # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the reverse of
+        # the US green-up/red-down convention). Chart background follows the dark
+        # Plotly template (pio.templates.default) set at startup.
+        up_color, down_color = ("#ff3333", "#00b300") if is_tw else ("#26c281", "#ff5b5b")
         legend_top = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
 
         fig = go.Figure()
