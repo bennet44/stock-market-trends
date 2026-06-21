@@ -152,9 +152,20 @@ with tab_overview:
         else:
             default_ticker = "AAPL"
             ticker_label = "股票代號"
-        raw_primary = st.text_input(
-            ticker_label, value=default_ticker, key=f"price_ticker_{'tw' if is_tw else 'us'}"
-        ).strip().upper() or default_ticker
+        # Switching 市場 only builds the active market's ticker field, so the
+        # other market's widget state is garbage-collected on switch. Passing
+        # value=default while the localStorage restore also writes this key
+        # triggers a default-vs-session-state conflict that can momentarily
+        # desync the box from the header below. Instead seed the widget once
+        # from a plain (never-GC'd) shadow key — no value= arg, no conflict —
+        # so the field (and the header derived from it) stay consistent across
+        # 台股⇄美股 switches and remember each market's last input.
+        _pt_key = f"price_ticker_{'tw' if is_tw else 'us'}"
+        _pt_shadow = f"price_ticker_value_{'tw' if is_tw else 'us'}"
+        if _pt_key not in st.session_state:
+            st.session_state[_pt_key] = st.session_state.get(_pt_shadow) or default_ticker
+        raw_primary = st.text_input(ticker_label, key=_pt_key).strip().upper() or default_ticker
+        st.session_state[_pt_shadow] = raw_primary
         primary = universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary
     with col_period:
         period_label = st.selectbox(
