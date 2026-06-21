@@ -533,9 +533,8 @@ with tab_reco:
         f"- **篩選範圍**：{scope_desc}\n"
         "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
         "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
-        f"- **買賣價**：目標價＝該股歷史上方向正確時的「典型（中位數）漲跌幅」（持有 {hold_display}）\n"
-        f"- **歷史勝率**：該股歷史上持有 {hold_display}「上漲（買入）／下跌（賣出）」的比例\n"
-        f"- **未來勝率**：歷史上持有 {hold_display} 達到上述目標價的機率（達標比抓對方向難，故約為歷史勝率的一半）\n"
+        f"- **建議進場價／賣出價**：賣出價＝進場價 ×(1＋該股歷史上方向正確時的典型（中位數）漲跌幅)（持有 {hold_display}）\n"
+        f"- **未來勝率**：歷史上持有 {hold_display} 達到建議賣出價的機率\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序"
     )
     if is_tw:
@@ -559,10 +558,10 @@ with tab_reco:
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
         _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                        "RSI (14)", "綜合評分"]
-        _PRICE_COLS = ["進場價", "目標價"]
+        _PRICE_COLS = ["建議進場價", "建議賣出價"]
         _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/SMA50)", "Sharpe Ratio",
                       "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
-                      "進場價", "目標價", "獲利%", "歷史勝率", "未來勝率", "原因說明"]
+                      "建議進場價", "建議賣出價", "獲利%", "未來勝率", "原因說明"]
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
             fmt = df.copy()
@@ -575,7 +574,7 @@ with tab_reco:
             config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表未來勝率越高。")}
             # 獲利% and 歷史/未來勝率 are already stored as percentages (not fractions),
             # so they only get the %% format, not the *100 in _format_reco.
-            for col in _PCT_COLS + ["獲利%", "歷史勝率", "未來勝率"]:
+            for col in _PCT_COLS + ["獲利%", "未來勝率"]:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
             for col in _PLAIN_COLS:
@@ -596,8 +595,8 @@ with tab_reco:
         # columns to 進場價/目標價, prepend a 建議 dot, and keep buys (high score)
         # above sells. The dot is coloured green (buy) / red (sell) and shaded
         # by 未來勝率 via a Styler.
-        buy_u = buy_df.rename(columns={"建議買入價": "進場價", "目標賣出價": "目標價"})
-        sell_u = sell_df.rename(columns={"建議賣出價": "進場價", "逢低買回參考價": "目標價"})
+        buy_u = buy_df.rename(columns={"建議買入價": "建議進場價", "目標賣出價": "建議賣出價"})
+        sell_u = sell_df.rename(columns={"建議賣出價": "建議進場價", "逢低買回參考價": "建議賣出價"})
         buy_u["建議"] = "●"
         sell_u["建議"] = "●"
         merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])

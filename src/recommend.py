@@ -231,18 +231,14 @@ def add_price_targets(
     empirical distribution of forward returns over `hold_days` trading days.
     - 目標賣出價/逢低買回參考價: the *typical successful move* = the median of the
       historically up (buy) / down (sell) periods — symmetric for both sides.
-    - 歷史勝率: how often a hold_days hold moved the right way at all (up for
-      buy, down for sell) — the stock's directional hit rate.
-    - 未來勝率: how often it reached that target move specifically. Since the
-      target is the median of the favorable moves, this is ~half of 歷史勝率
-      and symmetric across sides — reaching a real target is by nature harder
-      than just getting the direction right, so 未來勝率 ≤ 歷史勝率.
+    - 未來勝率: how often it reached that target move specifically (the share of
+      hold_days windows with return >= the target for buy / <= for sell).
     A long hist_period (not the scoring window) is used so even multi-month
     holds have enough forward-return samples.
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
-    profit_pcts, targets, hist_wins, future_wins = [], [], [], []
+    profit_pcts, targets, future_wins = [], [], []
     for t, p in zip(out.index, price):
         hist = dl.get_price_history(t, period=hist_period)
         close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
@@ -251,7 +247,6 @@ def add_price_targets(
         move = float(np.median(subset)) if len(subset) else None
         profit_pcts.append(move * 100 if move is not None else None)
         targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
-        hist_wins.append(len(subset) / len(fwd) * 100 if len(fwd) else None)
         if move is not None and len(fwd):
             hit = (fwd >= move).mean() if side == "buy" else (fwd <= move).mean()
             future_wins.append(hit * 100)
@@ -264,9 +259,7 @@ def add_price_targets(
     else:
         out["建議賣出價"] = price
         out["逢低買回參考價"] = targets
-    # Placed last (in this order) so they sit just before 原因說明.
-    out["歷史勝率"] = hist_wins
-    out["未來勝率"] = future_wins
+    out["未來勝率"] = future_wins  # placed last so it sits just before 原因說明
     return out.drop(columns=["最新收盤價"])
 
 
