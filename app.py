@@ -103,7 +103,9 @@ def _display_name(ticker: str) -> str:
     name = universe.get_tw_company_name(ticker) if ticker.endswith((".TW", ".TWO")) else None
     if not name:
         info = dl.get_company_info(ticker)
-        name = info.get("shortName")
+        # Fall back to longName when shortName is missing so US tickers show
+        # "代碼(公司名稱)" as consistently as TW does (TW uses a curated dict).
+        name = info.get("shortName") or info.get("longName")
     return f"{ticker}({name})" if name else ticker
 
 

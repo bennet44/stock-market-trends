@@ -39,11 +39,25 @@ def get_multi_close(tickers: list[str], period: str = "1y", interval: str = "1d"
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def get_company_info(ticker: str) -> dict:
+def _get_company_info_cached(ticker: str) -> dict:
     try:
-        return yf.Ticker(ticker).get_info()
+        return yf.Ticker(ticker).get_info() or {}
     except Exception:
         return {}
+
+
+def get_company_info(ticker: str) -> dict:
+    """Company info dict from yfinance, cached 6h. A transient network failure
+    returns {}; we evict that empty result from the cache so the next render
+    retries instead of showing e.g. a US ticker with no company name for 6h
+    (TW names come from a local dict and don't have this problem)."""
+    info = _get_company_info_cached(ticker)
+    if not info:
+        try:
+            _get_company_info_cached.clear(ticker)
+        except Exception:
+            pass
+    return info
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
