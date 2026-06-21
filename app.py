@@ -131,9 +131,27 @@ def _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drifts, corr, risk_
     )
 
 
-market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
+col_market, col_save_tickers = st.columns([4, 1])
+with col_market:
+    market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
+
+with col_save_tickers:
+    st.write("")
+    if st.button(
+        "💾 儲存目前股票代號", help="把 Page1/2/4 目前輸入的股票代號儲存起來，下次開啟時自動帶入"
+    ):
+        _suffix = "tw" if is_tw else "us"
+        _n_assets_now = st.session_state.get(f"fcn_n_assets_{_suffix}", 1)
+        for _tk in (
+            f"price_ticker_{_suffix}",
+            f"compare_input_{_suffix}",
+            f"fcn_tickers_{_suffix}_{_n_assets_now}",
+        ):
+            if _tk in st.session_state:
+                _save_ticker_field(_tk, st.session_state[_tk])
+        st.toast("已儲存目前股票代號設定")
 
 tab_overview, tab_compare_risk, tab_reco, tab_fcn = st.tabs(
     ["📈 價格、技術指標與基本面", "🔗 多股比較、相關性與風險統計", "💡 買賣建議", "📐 FCN風險評估"]
