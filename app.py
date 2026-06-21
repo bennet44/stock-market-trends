@@ -70,7 +70,7 @@ RECO_PERIOD_OPTIONS = {
 }
 _HORIZON_LABEL = {"short": "短期", "medium": "中期", "long": "長期"}
 
-# Holding period (trading days) for the 買賣建議 tab's 歷史勝率/未來勝率 columns and
+# Holding period (trading days) for the 買賣建議 tab's 預測準確機率 column and
 # target prices. A preset dropdown plus a 自訂 (free-fill) option.
 RECO_HOLD_OPTIONS = {
     "1天": 1, "3天": 3, "5天": 5, "1週": 5, "3週": 15,
@@ -119,7 +119,7 @@ def _display_name(ticker: str) -> str:
 
 def _signal_color(side: str, win_rate: float | None) -> str:
     """CSS color for the merged table's buy/sell dot: green for buy, red for
-    sell, shaded by 未來勝率 (higher win rate → deeper, more saturated colour)
+    sell, shaded by 預測準確機率 (higher → deeper, more saturated colour)
     over a 0–40% range. Returns a `color: rgb(...)` declaration."""
     f = min(max((win_rate or 0) / 40.0, 0.0), 1.0)
     if side == "buy":  # light green -> dark green
@@ -482,7 +482,7 @@ with tab_reco:
         hold_label = st.selectbox(
             "持有天數", list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL], index=2,
             key=f"hold_tab3_{'tw' if is_tw else 'us'}",
-            help="歷史勝率與未來勝率都以此持有天數（交易日）計算，買賣目標價也用同一持有期。",
+            help="預測準確機率以此持有天數（交易日）計算，建議進場／賣出價也用同一持有期。",
         )
         if hold_label == _HOLD_CUSTOM_LABEL:
             hold_days = int(st.number_input(
@@ -533,9 +533,16 @@ with tab_reco:
         f"- **篩選範圍**：{scope_desc}\n"
         "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
         "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
-        f"- **建議進場價／賣出價**：賣出價＝進場價 ×(1＋該股歷史上方向正確時的典型（中位數）漲跌幅)（持有 {hold_display}）\n"
-        f"- **未來勝率**：歷史上持有 {hold_display} 達到建議賣出價的機率\n"
-        "- **操作**：點各欄表頭可由大至小／小至大排序"
+        f"- **建議進場價**：買入＝現價逢低承接（−N日跌幅中位）、賣出＝現價逢高減碼（持有 {hold_display}）\n"
+        f"- **建議賣出價／獲利%**：賣出價＝進場價×(1＋N日漲幅中位)；獲利%＝賣出/進場−1\n"
+        f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
+        "- **操作**：點各欄表頭可由大至小／小至大排序\n"
+        "\n"
+        f"**公式**（u＝{hold_display}上漲報酬中位數、d＝下跌報酬中位數〔d<0〕）：\n"
+        "1. 建議進場價＝現價×(1+d)〔買〕／ 現價×(1+u)〔賣〕\n"
+        "2. 建議賣出價＝現價×(1+u)〔買〕／ 現價×(1+d)〔賣〕\n"
+        "3. 獲利%＝建議賣出價 / 建議進場價 − 1\n"
+        "4. 預測準確機率＝歷史上 N 日內「最高價≥建議賣出價」〔買〕／「最低價≤建議賣出價」〔賣〕的比例"
     )
     if is_tw:
         reco_universe = universe.get_twse_tickers()
@@ -561,7 +568,7 @@ with tab_reco:
         _PRICE_COLS = ["建議進場價", "建議賣出價"]
         _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/SMA50)", "Sharpe Ratio",
                       "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
-                      "建議進場價", "建議賣出價", "獲利%", "未來勝率", "原因說明"]
+                      "建議進場價", "建議賣出價", "獲利%", "預測準確機率", "原因說明"]
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
             fmt = df.copy()
@@ -571,10 +578,10 @@ with tab_reco:
             return fmt
 
         def _column_config(df: pd.DataFrame) -> dict:
-            config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表未來勝率越高。")}
-            # 獲利% and 歷史/未來勝率 are already stored as percentages (not fractions),
+            config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表預測準確機率越高。")}
+            # 獲利% and 預測準確機率 are already stored as percentages (not fractions),
             # so they only get the %% format, not the *100 in _format_reco.
-            for col in _PCT_COLS + ["獲利%", "未來勝率"]:
+            for col in _PCT_COLS + ["獲利%", "預測準確機率"]:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
             for col in _PLAIN_COLS:
@@ -594,7 +601,7 @@ with tab_reco:
         # Merge buy + sell into one table: unify the two side-specific price
         # columns to 進場價/目標價, prepend a 建議 dot, and keep buys (high score)
         # above sells. The dot is coloured green (buy) / red (sell) and shaded
-        # by 未來勝率 via a Styler.
+        # by 預測準確機率 via a Styler.
         buy_u = buy_df.rename(columns={"建議買入價": "建議進場價", "目標賣出價": "建議賣出價"})
         sell_u = sell_df.rename(columns={"建議賣出價": "建議進場價", "逢低買回參考價": "建議賣出價"})
         buy_u["建議"] = "●"
@@ -602,7 +609,7 @@ with tab_reco:
         merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])
         merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
         _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
-        _future = merged["未來勝率"].tolist() if "未來勝率" in merged else [None] * len(merged)
+        _future = merged["預測準確機率"].tolist() if "預測準確機率" in merged else [None] * len(merged)
 
         def _signal_styles(df: pd.DataFrame) -> pd.DataFrame:
             css = pd.DataFrame("", index=df.index, columns=df.columns)
@@ -611,7 +618,7 @@ with tab_reco:
                 css.iloc[i, loc] = _signal_color(side, w) + "; text-align: center; font-size: 20px"
             return css
 
-        st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔　— 圓點顏色越深＝未來勝率越高")
+        st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔　— 圓點顏色越深＝預測準確機率越高")
         st.dataframe(
             merged.style.apply(_signal_styles, axis=None),
             use_container_width=True, column_config=_column_config(merged),

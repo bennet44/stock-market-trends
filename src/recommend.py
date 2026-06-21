@@ -8,6 +8,7 @@ import concurrent.futures
 
 import numpy as np
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 
 from . import data_loader as dl
 from . import news as news_mod
@@ -221,45 +222,81 @@ def top_buy_sell(table: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFram
 PRICE_TARGET_HOLD_DAYS = 5
 
 
+def _forward_touch_rate(close, extreme, n_days: int, threshold: float, direction: str):
+    """Path-based "touch" probability over a forward window.
+
+    For every historical day, looks at the next `n_days` and computes the
+    forward extreme return relative to that day's close — the max (direction
+    "up") or min (direction "down"). Returns the % of days whose forward
+    extreme reaches `threshold` (>= for up, <= for down): i.e. the historical
+    chance the price *touches* a target move within the holding period.
+    """
+    c = np.asarray(close, dtype=float)
+    e = np.asarray(extreme, dtype=float)
+    n = len(c)
+    if n <= n_days:
+        return None
+    # win[k] = e[k : k+n_days]; the window after day i is win[i+1].
+    win = sliding_window_view(e, n_days)[1:n - n_days + 1]
+    base = c[:n - n_days]
+    if direction == "up":
+        rets = win.max(axis=1) / base - 1
+        return float((rets >= threshold).mean() * 100)
+    rets = win.min(axis=1) / base - 1
+    return float((rets <= threshold).mean() * 100)
+
+
 def add_price_targets(
     df: pd.DataFrame, side: str, currency: str = "$",
     hold_days: int = PRICE_TARGET_HOLD_DAYS, hist_period: str = "10y",
 ) -> pd.DataFrame:
-    """Attach an entry price, a target price, and two per-stock win rates.
+    """Attach a dynamic entry price, a target price, profit %, and 預測準確機率.
 
-    For each ticker, pulls a long price history (hist_period) and builds the
-    empirical distribution of forward returns over `hold_days` trading days.
-    - 目標賣出價/逢低買回參考價: the *typical successful move* = the median of the
-      historically up (buy) / down (sell) periods — symmetric for both sides.
-    - 未來勝率: how often it reached that target move specifically (the share of
-      hold_days windows with return >= the target for buy / <= for sell).
-    A long hist_period (not the scoring window) is used so even multi-month
-    holds have enough forward-return samples.
+    Sized off a long history (hist_period) over `hold_days` trading days, with
+    u = median of up moves and d = median of down moves (d < 0):
+    - buy:  進場 = 現價×(1+d) (逢低承接), 賣出 = 現價×(1+u) (典型漲幅目標).
+    - sell: 進場 = 現價×(1+u) (逢高減碼), 賣出 = 現價×(1+d) (逢低買回目標).
+    - 獲利%: 賣出/進場 − 1 (buy 為正、sell 為負，獲利來自下跌).
+    - 預測準確機率: path-based — the historical % of `hold_days` windows whose
+      forward high (buy) reaches the up target, or forward low (sell) reaches
+      the down target, relative to the day's close. Uses High/Low for the
+      "touch", falling back to Close.
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
-    profit_pcts, targets, future_wins = [], [], []
+    profit_pcts, entries, targets, future_wins = [], [], [], []
     for t, p in zip(out.index, price):
         hist = dl.get_price_history(t, period=hist_period)
-        close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
+        if hist.empty or not pd.notnull(p):
+            entries.append(None); targets.append(None); profit_pcts.append(None); future_wins.append(None)
+            continue
+        close = hist["Close"]
+        high = hist["High"] if "High" in hist else close
+        low = hist["Low"] if "Low" in hist else close
         fwd = close.pct_change(periods=hold_days).dropna()
-        subset = fwd[fwd > 0] if side == "buy" else fwd[fwd < 0]
-        move = float(np.median(subset)) if len(subset) else None
-        profit_pcts.append(move * 100 if move is not None else None)
-        targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
-        if move is not None and len(fwd):
-            hit = (fwd >= move).mean() if side == "buy" else (fwd <= move).mean()
-            future_wins.append(hit * 100)
+        ups, downs = fwd[fwd > 0], fwd[fwd < 0]
+        u = float(np.median(ups)) if len(ups) else None
+        d = float(np.median(downs)) if len(downs) else None
+        if side == "buy":
+            entry = p * (1 + d) if d is not None else None
+            target = p * (1 + u) if u is not None else None
+            fw = _forward_touch_rate(close, high, hold_days, u, "up") if u is not None else None
         else:
-            future_wins.append(None)
+            entry = p * (1 + u) if u is not None else None   # 逢高減碼
+            target = p * (1 + d) if d is not None else None   # 逢低買回
+            fw = _forward_touch_rate(close, low, hold_days, d, "down") if d is not None else None
+        entries.append(entry)
+        targets.append(target)
+        profit_pcts.append((target / entry - 1) * 100 if entry and target else None)
+        future_wins.append(fw)
     out["獲利%"] = profit_pcts
     if side == "buy":
-        out["建議買入價"] = price
+        out["建議買入價"] = entries
         out["目標賣出價"] = targets
     else:
-        out["建議賣出價"] = price
+        out["建議賣出價"] = entries
         out["逢低買回參考價"] = targets
-    out["未來勝率"] = future_wins  # placed last so it sits just before 原因說明
+    out["預測準確機率"] = future_wins  # placed last so it sits just before 原因說明
     return out.drop(columns=["最新收盤價"])
 
 
