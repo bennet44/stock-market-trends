@@ -484,7 +484,11 @@ with tab_reco:
             hold_display = f"{hold_days} 個交易日"
         else:
             hold_days = RECO_HOLD_OPTIONS[hold_label]
-            hold_display = hold_label
+            # Surface the actual trading-day count for week/month/year labels so
+            # the caption's 天數 is unambiguously the same as the holding period
+            # used in the calculation (e.g. "1個月（21 交易日）"). Day-count labels
+            # like "5天" already equal the count, so no suffix is added.
+            hold_display = hold_label if hold_label == f"{hold_days}天" else f"{hold_label}（{hold_days} 交易日）"
 
     # 綜合評分的八大因子占比，緊接在「時間期間」等控制項下方一列呈現。
     # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
