@@ -117,17 +117,17 @@ def _display_name(ticker: str) -> str:
     return f"{ticker}({name})" if name else ticker
 
 
-def _signal_color(side: str, frac: float) -> str:
-    """CSS color for the merged table's buy/sell dot: green for buy, red for
-    sell, shaded by `frac` in [0,1] (0 = lightest, 1 = deepest). `frac` is the
-    table's min–max-normalized 預測準確機率, so the gradient always spans the
-    full visible range. Returns a `color: rgb(...)` declaration."""
+def _signal_rgb(side: str, frac: float) -> str:
+    """`rgb(...)` colour for the merged table's buy/sell signal cell: green for
+    buy, red for sell, shaded by `frac` in [0,1] (0 = lightest, 1 = deepest).
+    `frac` is the table's min–max-normalized 預測準確機率, so the gradient always
+    spans the full visible range."""
     f = min(max(frac, 0.0), 1.0)
     if side == "buy":  # light green -> deep green
         r, g, b = int(150 - 150 * f), int(210 - 110 * f), int(150 - 150 * f)
     else:              # light red -> deep red
         r, g, b = int(235 - 85 * f), int(120 - 120 * f), int(120 - 120 * f)
-    return f"color: rgb({r},{g},{b})"
+    return f"rgb({r},{g},{b})"
 
 
 def _render_chart(fig: go.Figure, analysis_mode: bool = False) -> None:
@@ -623,9 +623,10 @@ with tab_reco:
             loc = df.columns.get_loc("建議")
             for i, (side, w) in enumerate(zip(_sides, _future)):
                 frac = (w - _fmin) / _span if w is not None else 0.0
-                # Large bold glyph filling the cell + strengthened gradient colour.
-                css.iloc[i, loc] = (_signal_color(side, frac)
-                                    + "; text-align: center; font-size: 34px; font-weight: 900; line-height: 1")
+                rgb = _signal_rgb(side, frac)
+                # Fill the whole cell with the gradient colour; matching text
+                # colour hides the ● glyph so the cell reads as a solid block.
+                css.iloc[i, loc] = f"background-color: {rgb}; color: {rgb}"
             return css
 
         st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔")
