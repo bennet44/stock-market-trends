@@ -465,8 +465,8 @@ with tab_reco:
     col_period3, col_topn, col_hold = st.columns(3)
     with col_period3:
         period_label = st.selectbox(
-            "時間期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
-            help="此處選的期間，就是右側「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。"
+            "統計期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
+            help="此處選的期間，就是「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。"
                  "「今年至今(YTD)」則為今年 1 月 1 日至今。",
         )
         period_spec = RECO_PERIOD_OPTIONS[period_label]
@@ -498,7 +498,7 @@ with tab_reco:
             # like "5天" already equal the count, so no suffix is added.
             hold_display = hold_label if hold_label == f"{hold_days}天" else f"{hold_label}（{hold_days} 交易日）"
 
-    # 綜合評分的八大因子占比，緊接在「時間期間」等控制項下方一列呈現。
+    # 綜合評分的八大因子占比，緊接在「統計期間」等控制項下方一列呈現。
     # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
     _FACTOR_DISPLAY = {
         "期間報酬率": "期間報酬率",
@@ -512,7 +512,7 @@ with tab_reco:
     }
     st.markdown(
         f"**綜合評分 ＝ 下列八大因子加權（占比如下）**　"
-        f"已依「時間期間」自動切換為 **{_HORIZON_LABEL[reco_horizon]}** 權重"
+        f"已依「統計期間」自動切換為 **{_HORIZON_LABEL[reco_horizon]}** 權重"
     )
     _fcols = st.columns(len(_FACTOR_DISPLAY))
     for _c, (_k, _label) in zip(_fcols, _FACTOR_DISPLAY.items()):
@@ -547,7 +547,7 @@ with tab_reco:
             reco_universe, period, DEFAULT_RISK_FREE_RATE,
             lookback_days=reco_lookback, weights=reco_weights)
     if reco_table.empty:
-        st.warning("無足夠資料產生建議，請確認時間期間。")
+        st.warning("無足夠資料產生建議，請確認統計期間。")
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
@@ -581,6 +581,12 @@ with tab_reco:
             for col in _PLAIN_COLS:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format="%.2f")
+            if "綜合評分" in df:
+                config["綜合評分"] = st.column_config.NumberColumn(
+                    "綜合評分", format="%.2f",
+                    help="八因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
+                         "越高越好，無固定滿分；實務上多落在約 −2 ~ +2。",
+                )
             for col in _PRICE_COLS:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format=f"{currency}%.2f")
