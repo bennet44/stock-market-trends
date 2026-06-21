@@ -62,6 +62,7 @@ RECO_PERIOD_OPTIONS = {
     "1年": {"fetch": "1y", "lookback": None},
     "2年": {"fetch": "2y", "lookback": None},
     "5年": {"fetch": "5y", "lookback": None},
+    "今年至今(YTD)": {"fetch": "ytd", "lookback": None},
 }
 # Charts that render one trace/row per ticker (comparison overlay, correlation
 # heatmap, distribution histogram) become unreadable and slow past this many
@@ -422,7 +423,9 @@ with tab_reco:
     col_period3, col_winrate3, col_topn = st.columns(3)
     with col_period3:
         period_label = st.selectbox(
-            "時間範圍", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}"
+            "時間期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
+            help="此處選的期間，就是右側「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。"
+                 "「今年至今(YTD)」則為今年 1 月 1 日至今。",
         )
         period_spec = RECO_PERIOD_OPTIONS[period_label]
         period = period_spec["fetch"]
@@ -460,7 +463,7 @@ with tab_reco:
         reco_table = recommend.build_recommendation_table(
             reco_universe, period, DEFAULT_RISK_FREE_RATE, lookback_days=reco_lookback)
     if reco_table.empty:
-        st.warning("無足夠資料產生建議，請確認時間範圍。")
+        st.warning("無足夠資料產生建議，請確認時間期間。")
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
