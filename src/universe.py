@@ -107,10 +107,13 @@ _TW_NAMES = {
 
 
 def get_tw_company_name(ticker: str) -> str | None:
-    """Chinese name for a curated TW code, or None if not in the list
-    (e.g. a manually-entered ticker outside the curated watchlist)."""
+    """Chinese name for a TW code. Prefers the small curated list (covers ETFs
+    and stays stable offline), then falls back to the full TWSE 上市公司 name
+    map so any TWSE-listed stock — not just the curated watchlist — gets a
+    Chinese name for its header and zh-TW news query. None if unknown (e.g. an
+    OTC/.TWO code, or offline with nothing curated)."""
     code = ticker.split(".")[0]
-    return _TW_NAMES.get(code)
+    return _TW_NAMES.get(code) or dl.get_twse_company_names().get(code)
 
 
 def get_twse_tickers() -> list[str]:

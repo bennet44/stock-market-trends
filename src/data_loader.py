@@ -15,6 +15,11 @@ _TWSE_T86_URL = (
 )
 _TWSE_T86_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
 
+# 上市公司基本資料 — Chinese short name (公司簡稱) for every TWSE-listed company,
+# used to give any TWSE ticker a Chinese name (header + zh-TW news query) even
+# when it isn't in universe._TW_NAMES's small curated list.
+_TWSE_COMPANY_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_price_history(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
@@ -58,6 +63,25 @@ def get_company_info(ticker: str) -> dict:
         except Exception:
             pass
     return info
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_twse_company_names() -> dict[str, str]:
+    """{stock code: 公司簡稱 (Chinese short name)} for all TWSE-listed companies,
+    from the 上市公司基本資料 open-data feed. Returns {} on any failure."""
+    try:
+        req = urllib.request.Request(_TWSE_COMPANY_URL, headers=_TWSE_T86_HEADERS)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            rows = json.loads(resp.read())
+    except Exception:
+        return {}
+    names = {}
+    for row in rows:
+        code = (row.get("公司代號") or "").strip()
+        name = (row.get("公司簡稱") or "").strip()
+        if code and name:
+            names[code] = name
+    return names
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
