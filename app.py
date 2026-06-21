@@ -278,51 +278,50 @@ with tab_overview:
         st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
                    f"{(latest / prev - 1) * 100:.2f}%")
 
-        st.markdown("##### 建議買入／賣出價格參考（依預測準確機率設定）")
-        col_horizon, col_winrate = st.columns(2)
-        with col_horizon:
-            horizon_label = st.selectbox(
-                "持有天數(今日算起)", list(PRICE_TARGET_HORIZONS.keys()), index=2,
-                key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
-            )
-        with col_winrate:
-            win_rate_pct = st.number_input(
-                "預測準確機率 (%)", min_value=50, max_value=95, value=60, step=5,
-                key=f"win_rate_{'tw' if is_tw else 'us'}",
-                help="以歷史上漲／下跌期間的報酬率分布，反推在此預測準確機率下對應的漲跌幅。",
-            )
+        st.markdown("##### 建議買入／賣出價格參考")
+        horizon_label = st.selectbox(
+            "持有天數(今日算起)", list(PRICE_TARGET_HORIZONS.keys()), index=2,
+            key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
+        )
         horizon = PRICE_TARGET_HORIZONS[horizon_label]
         hold_days, calendar_days = horizon["trading_days"], horizon["calendar_days"]
         query_date = dt.date.today()
         target_date = query_date + dt.timedelta(days=calendar_days)
         st.caption(
-            "統計期間皆是 1 年。"
-            f"依過去 {hold_days} 個交易日（{horizon_label}）的歷史報酬率分布估算，"
-            f"對應查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
-            f"{horizon_label}預測日 {target_date.year}/{target_date.month}/{target_date.day}，"
-            "未考慮基本面或市場狀況，僅供參考，非投資建議。"
+            "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
+            "取價＝現價×(1＋歷史漲跌幅中位數)；預測準確機率＝路徑式回測（持有期內最高/最低觸及的比例）。"
+            f"依過去 1 年、持有 {hold_days} 個交易日（{horizon_label}）估算，"
+            f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
+            f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
         )
-        # The buy/sell reference always uses a fixed 1-year window for the return
-        # distribution (independent of the chart's 時間範圍 above), so 統計期間皆是 1 年.
-        pt_close = dl.get_price_history(primary, period="1y")["Close"]
+        # Same logic as the 買賣建議 tab (median move pricing + path-based touch
+        # rate), but on a fixed 1-year window, so 統計期間皆是 1 年.
+        pt = dl.get_price_history(primary, period="1y")
+        if pt.empty:
+            pt = df  # chart data (non-empty here) as a safety net
+        pt_close, pt_high, pt_low = pt["Close"], pt["High"], pt["Low"]
         fwd_returns = pt_close.pct_change(periods=hold_days).dropna()
         ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
-        up_move = np.percentile(ups, 100 - win_rate_pct) if not ups.empty else None
-        down_move = np.percentile(downs, 100 - win_rate_pct) if not downs.empty else None
+        up_move = float(np.median(ups)) if not ups.empty else None
+        down_move = float(np.median(downs)) if not downs.empty else None
 
         col_buy, col_sell = st.columns(2)
         with col_buy:
             if down_move is not None:
+                acc = recommend.forward_touch_rate(pt_close, pt_low, hold_days, down_move, "down")
                 st.metric("建議買入價（逢低承接）", f"{currency}{latest * (1 + down_move):,.2f}",
                            f"{down_move * 100:.2f}%")
-                st.caption(f"歷史下跌期間中，有 {win_rate_pct}% 的機率跌幅不超過此價位。")
+                st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最低觸及此買入價的比例約 "
+                           f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
             else:
                 st.metric("建議買入價（逢低承接）", "資料不足")
         with col_sell:
             if up_move is not None:
+                acc = recommend.forward_touch_rate(pt_close, pt_high, hold_days, up_move, "up")
                 st.metric("建議賣出價（目標停利）", f"{currency}{latest * (1 + up_move):,.2f}",
                            f"{up_move * 100:.2f}%")
-                st.caption(f"歷史上漲期間中，有 {win_rate_pct}% 的機率可達此漲幅。")
+                st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最高觸及此賣出價的比例約 "
+                           f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
             else:
                 st.metric("建議賣出價（目標停利）", "資料不足")
 

@@ -222,7 +222,7 @@ def top_buy_sell(table: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFram
 PRICE_TARGET_HOLD_DAYS = 5
 
 
-def _forward_touch_rate(close, extreme, n_days: int, threshold: float, direction: str):
+def forward_touch_rate(close, extreme, n_days: int, threshold: float, direction: str):
     """Path-based "touch" probability over a forward window.
 
     For every historical day, looks at the next `n_days` and computes the
@@ -280,11 +280,11 @@ def add_price_targets(
         if side == "buy":
             entry = p * (1 + d) if d is not None else None
             target = p * (1 + u) if u is not None else None
-            fw = _forward_touch_rate(close, high, hold_days, u, "up") if u is not None else None
+            fw = forward_touch_rate(close, high, hold_days, u, "up") if u is not None else None
         else:
             entry = p * (1 + u) if u is not None else None   # 逢高減碼
             target = p * (1 + d) if d is not None else None   # 逢低買回
-            fw = _forward_touch_rate(close, low, hold_days, d, "down") if d is not None else None
+            fw = forward_touch_rate(close, low, hold_days, d, "down") if d is not None else None
         entries.append(entry)
         targets.append(target)
         profit_pcts.append((target / entry - 1) * 100 if entry and target else None)
