@@ -173,7 +173,11 @@ with tab_overview:
         )
     period = PERIOD_OPTIONS[period_label]
     primary_label = _display_name(primary)
-    st.subheader(f"{primary_label} 價格與技術指標")
+    # Plain markdown heading rather than st.subheader: the heading component
+    # auto-generates an anchor id from its text and can fail to update the
+    # rendered text on rerun (leaving a stale ticker like "TSLA" in the header
+    # while the box/chart already show "AAPL"). Markdown has no such anchor.
+    st.markdown(f"### {primary_label} 價格與技術指標")
     df = dl.get_price_history(primary, period=period)
     if df.empty:
         st.error(f"找不到 {primary} 的資料，請確認代號是否正確。")
@@ -296,7 +300,7 @@ with tab_overview:
                 st.metric("建議賣出價（目標停利）", "資料不足")
 
     st.divider()
-    st.subheader(f"{primary_label} 基本面財務")
+    st.markdown(f"### {primary_label} 基本面財務")
     fdf = dl.get_fundamentals_table([primary])
     if fdf.empty:
         st.warning("無法取得基本面資料。")
@@ -313,7 +317,7 @@ with tab_overview:
 
     st.divider()
     news_date_label = news.recent_news_date_label()
-    st.subheader(f"{primary_label} 相關新聞（{news_date_label}）")
+    st.markdown(f"### {primary_label} 相關新聞（{news_date_label}）")
     # TW tickers: prefer the curated Chinese name for the news query — yfinance's
     # "shortName" comes back in English for TWSE tickers (see _display_name),
     # and an English company name paired with a zh-TW Google News search
