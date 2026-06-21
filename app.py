@@ -113,8 +113,8 @@ market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
 
-tab_overview, tab_compare_risk, tab_reco, tab_fcn = st.tabs(
-    ["📈 價格、技術指標與基本面", "🔗 多股比較、相關性與風險統計", "💡 買賣建議", "📐 FCN風險評估"]
+tab_overview, tab_reco, tab_compare_risk, tab_fcn = st.tabs(
+    ["📈 價格、技術指標與基本面", "💡 買賣建議", "🔗 多股比較與風險統計", "📐 FCN風險評估"]
 )
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
