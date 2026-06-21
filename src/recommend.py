@@ -223,20 +223,20 @@ PRICE_TARGET_HOLD_DAYS = 5
 
 def add_price_targets(
     df: pd.DataFrame, side: str, currency: str = "$",
-    win_rate_pct: float = 60, hold_days: int = PRICE_TARGET_HOLD_DAYS,
-    hist_period: str = "10y",
+    hold_days: int = PRICE_TARGET_HOLD_DAYS, hist_period: str = "10y",
 ) -> pd.DataFrame:
     """Attach an entry price, a target price, and two per-stock win rates.
 
     For each ticker, pulls a long price history (hist_period) and builds the
     empirical distribution of forward returns over `hold_days` trading days.
-    - 目標賣出價/逢低買回參考價: the move at the win_rate_pct percentile among
-      historically up (buy) / down (sell) periods.
+    - 目標賣出價/逢低買回參考價: the *typical successful move* = the median of the
+      historically up (buy) / down (sell) periods — symmetric for both sides.
     - 歷史勝率: how often a hold_days hold moved the right way at all (up for
       buy, down for sell) — the stock's directional hit rate.
-    - 未來勝率: how often it reached the suggested target move specifically —
-      i.e. the historical probability that buying/selling at the suggested
-      price would have hit the target within hold_days.
+    - 未來勝率: how often it reached that target move specifically. Since the
+      target is the median of the favorable moves, this is ~half of 歷史勝率
+      and symmetric across sides — reaching a real target is by nature harder
+      than just getting the direction right, so 未來勝率 ≤ 歷史勝率.
     A long hist_period (not the scoring window) is used so even multi-month
     holds have enough forward-return samples.
     """
@@ -248,7 +248,7 @@ def add_price_targets(
         close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
         fwd = close.pct_change(periods=hold_days).dropna()
         subset = fwd[fwd > 0] if side == "buy" else fwd[fwd < 0]
-        move = np.percentile(subset, 100 - win_rate_pct) if not subset.empty else None
+        move = float(np.median(subset)) if len(subset) else None
         profit_pcts.append(move * 100 if move is not None else None)
         targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
         hist_wins.append(len(subset) / len(fwd) * 100 if len(fwd) else None)

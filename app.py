@@ -86,10 +86,6 @@ MAX_CHART_TICKERS = 30
 # input now lives on the recommendation tab), so its Sharpe Ratio uses this
 # fixed default instead.
 DEFAULT_RISK_FREE_RATE = 0.04
-# The 買賣建議 tab no longer asks the user to set a target win rate; the buy/sell
-# target prices use this fixed reference percentile, and the table instead shows
-# each stock's *computed* 歷史勝率 for the user to judge against.
-RECO_TARGET_WIN_RATE = 60
 # Holding-period choices for Tab 1's win-rate-based buy/sell price reference:
 # trading days drive the historical return distribution, calendar days drive
 # the displayed "query date ~ target date" label.
@@ -525,9 +521,9 @@ with tab_reco:
         f"- **篩選範圍**：{scope_desc}\n"
         "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
         "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
-        f"- **買賣價**：以最新收盤價估算，目標價依歷史報酬率分布推算（持有 {hold_display}）\n"
+        f"- **買賣價**：目標價＝該股歷史上方向正確時的「典型（中位數）漲跌幅」（持有 {hold_display}）\n"
         f"- **歷史勝率**：該股歷史上持有 {hold_display}「上漲（買入）／下跌（賣出）」的比例\n"
-        f"- **未來勝率**：依建議買入／賣出價，歷史上持有 {hold_display} 達到該目標價的機率，供你依個人喜好判斷\n"
+        f"- **未來勝率**：歷史上持有 {hold_display} 達到上述目標價的機率（達標比抓對方向難，故約為歷史勝率的一半）\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序"
     )
     if is_tw:
@@ -543,9 +539,9 @@ with tab_reco:
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
-            recommend.add_price_targets(buy_df, "buy", currency, RECO_TARGET_WIN_RATE, hold_days), "buy")
+            recommend.add_price_targets(buy_df, "buy", currency, hold_days), "buy")
         sell_df = recommend.add_reason(
-            recommend.add_price_targets(sell_df, "sell", currency, RECO_TARGET_WIN_RATE, hold_days), "sell")
+            recommend.add_price_targets(sell_df, "sell", currency, hold_days), "sell")
 
         _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
