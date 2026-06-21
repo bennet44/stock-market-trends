@@ -1,7 +1,19 @@
 """Cached data access layer around yfinance."""
+import datetime as dt
+import json
+import urllib.request
+
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
+# 三大法人買賣超日報 (T86) on TWSE's RWD endpoint — per-stock daily institutional
+# net buy/sell for the whole market. The openapi.twse.com.tw feed only exposes
+# aggregate/top-20 foreign holdings, not this per-stock table, so we use RWD.
+_TWSE_T86_URL = (
+    "https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json"
+)
+_TWSE_T86_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -32,6 +44,48 @@ def get_company_info(ticker: str) -> dict:
         return yf.Ticker(ticker).get_info()
     except Exception:
         return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_twse_institutional_net(window_days: int = 5) -> dict[str, int]:
+    """Per-stock 三大法人買賣超股數 summed over the most recent up to
+    `window_days` TWSE trading days, keyed by bare stock code (e.g. "2330").
+
+    Positive = net institutional buying. Walks back day by day (skipping
+    weekends and any non-trading day, where the feed returns stat != "OK"),
+    accumulating until `window_days` trading days are collected or a ~3-week
+    calendar cap is hit. Returns {} on total failure. The net figure is the
+    last column of each T86 row (三大法人買賣超股數).
+    """
+    net: dict[str, int] = {}
+    collected = 0
+    today = dt.date.today()
+    for back in range(0, 21):
+        if collected >= window_days:
+            break
+        d = today - dt.timedelta(days=back)
+        if d.weekday() >= 5:  # skip Sat/Sun before spending a request
+            continue
+        url = _TWSE_T86_URL.format(date=d.strftime("%Y%m%d"))
+        try:
+            req = urllib.request.Request(url, headers=_TWSE_T86_HEADERS)
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                payload = json.loads(resp.read())
+        except Exception:
+            continue
+        if payload.get("stat") != "OK" or not payload.get("data"):
+            continue
+        for row in payload["data"]:
+            if not row:
+                continue
+            code = (row[0] or "").strip()
+            try:
+                val = int(str(row[-1]).replace(",", "").strip())
+            except (ValueError, TypeError, AttributeError):
+                continue
+            net[code] = net.get(code, 0) + val
+        collected += 1
+    return net
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)

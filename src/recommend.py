@@ -21,25 +21,34 @@ from . import technical as ta
 # discount short-term momentum / headline sentiment. Each row sums to 1.0.
 FACTOR_WEIGHTS_BY_HORIZON = {
     "short": {
-        "期間報酬率": 0.30,
-        "Sharpe Ratio": 0.15,
-        "趨勢(價格/SMA50)": 0.25,
+        "期間報酬率": 0.18,
+        "技術面": 0.20,
+        "籌碼": 0.18,
+        "新聞情緒": 0.15,
+        "趨勢(價格/SMA50)": 0.12,
+        "Sharpe Ratio": 0.07,
         "估值(1/預估PE)": 0.05,
-        "新聞情緒": 0.25,
+        "基本面": 0.05,
     },
     "medium": {
-        "期間報酬率": 0.25,
-        "Sharpe Ratio": 0.25,
-        "趨勢(價格/SMA50)": 0.15,
-        "估值(1/預估PE)": 0.15,
-        "新聞情緒": 0.20,
+        "期間報酬率": 0.15,
+        "技術面": 0.13,
+        "籌碼": 0.12,
+        "新聞情緒": 0.12,
+        "趨勢(價格/SMA50)": 0.10,
+        "Sharpe Ratio": 0.13,
+        "估值(1/預估PE)": 0.12,
+        "基本面": 0.13,
     },
     "long": {
-        "期間報酬率": 0.15,
-        "Sharpe Ratio": 0.30,
-        "趨勢(價格/SMA50)": 0.10,
-        "估值(1/預估PE)": 0.30,
-        "新聞情緒": 0.15,
+        "期間報酬率": 0.10,
+        "技術面": 0.06,
+        "籌碼": 0.06,
+        "新聞情緒": 0.06,
+        "趨勢(價格/SMA50)": 0.08,
+        "Sharpe Ratio": 0.22,
+        "估值(1/預估PE)": 0.20,
+        "基本面": 0.22,
     },
 }
 # Default / backward-compatible weights when no horizon is specified.
@@ -53,6 +62,9 @@ _FACTOR_LABELS = {
     "趨勢(價格/SMA50)": "價格趨勢(相對SMA50)",
     "估值(1/預估PE)": "估值水準",
     "新聞情緒": "新聞情緒",
+    "基本面": "基本面",
+    "技術面": "技術面",
+    "籌碼": "籌碼面",
 }
 _CONTRIB_PREFIX = "_contrib_"
 
@@ -61,7 +73,11 @@ def _zscore(series: pd.Series) -> pd.Series:
     std = series.std()
     if pd.isna(std) or std == 0:
         return pd.Series(0.0, index=series.index)
-    return (series - series.mean()) / std
+    # Tickers missing this metric (NaN) score neutral (0) rather than poisoning
+    # the row's composite — mean/std already ignore NaN, so only the per-row
+    # result needs neutralizing. Matters more now that several factors (基本面,
+    # 技術面, 籌碼) are unavailable for some tickers / short windows.
+    return ((series - series.mean()) / std).fillna(0.0)
 
 
 def _news_sentiment(ticker: str, company_name: str | None) -> float:
@@ -84,29 +100,65 @@ def build_recommendation_table(
     FACTOR_WEIGHTS_BY_HORIZON); None falls back to the medium-horizon default.
     """
     weights = weights or FACTOR_WEIGHTS
+    # TW tickers source the 籌碼 factor from real 三大法人 net buy/sell (fetched
+    # once for the whole market); US tickers fall back to a Chaikin Money Flow
+    # proxy computed from their own OHLCV. Only pay for the TW fetch if needed.
+    inst_net = (
+        dl.get_twse_institutional_net()
+        if any(t.endswith((".TW", ".TWO")) for t in tickers) else {}
+    )
     rows = {}
     company_names = {}
     for t in tickers:
         df = dl.get_price_history(t, period=period)
         if df.empty or len(df) < 2:
             continue
-        close = df["Close"]
-        if lookback_days is not None:
-            close = close.iloc[-(lookback_days + 1):]
-            if len(close) < 2:
-                continue
+        win = df.iloc[-(lookback_days + 1):] if lookback_days is not None else df
+        if len(win) < 2:
+            continue
+        close = win["Close"]
+        high, low, volume = win["High"], win["Low"], win["Volume"]
+        last_close = close.iloc[-1]
         rets = risk_mod.daily_returns(close)
         sma50 = ta.sma(close, 50).iloc[-1]
         info = dl.get_company_info(t)
         pe = info.get("forwardPE") or info.get("trailingPE")
         company_names[t] = info.get("shortName")
+
+        # 技術面 sub-signals (each a "bullish momentum" continuous value, NaN when
+        # the window is too short — neutralized by _zscore later).
+        macd_hist = ta.macd(close)["hist"].iloc[-1]
+        kd_df = ta.kd(high, low, close)
+        rsi_last = ta.rsi(close).iloc[-1]
+
+        # 籌碼 (capital flow): TW = recent 三大法人 net normalized by shares
+        # outstanding; US = Chaikin Money Flow over the window.
+        if t.endswith((".TW", ".TWO")):
+            shares = info.get("sharesOutstanding") or info.get("floatShares")
+            net_shares = inst_net.get(t.split(".")[0])
+            chip = (net_shares / shares) if (net_shares is not None and shares) else np.nan
+        else:
+            cmf = ta.chaikin_money_flow(high, low, close, volume, window=min(20, max(2, len(win) - 1)))
+            chip = cmf.iloc[-1] if len(cmf) else np.nan
+
         rows[t] = {
-            "最新收盤價": close.iloc[-1],
-            "期間報酬率": close.iloc[-1] / close.iloc[0] - 1,
+            "最新收盤價": last_close,
+            "期間報酬率": last_close / close.iloc[0] - 1,
             "Sharpe Ratio": risk_mod.sharpe_ratio(rets, risk_free_rate),
-            "趨勢(價格/SMA50)": (close.iloc[-1] / sma50 - 1) if pd.notna(sma50) and sma50 else np.nan,
+            "趨勢(價格/SMA50)": (last_close / sma50 - 1) if pd.notna(sma50) and sma50 else np.nan,
             "估值(1/預估PE)": (1 / pe) if pe and pe > 0 else np.nan,
-            "RSI (14)": ta.rsi(close).iloc[-1],
+            "RSI (14)": rsi_last,
+            # 基本面 sub-metrics (yfinance fundamentals)
+            "_f_rev": info.get("revenueGrowth"),
+            "_f_earn": info.get("earningsGrowth"),
+            "_f_margin": info.get("profitMargins"),
+            "_f_roe": info.get("returnOnEquity"),
+            # 技術面 sub-metrics
+            "_t_macd": macd_hist / last_close if last_close else np.nan,
+            "_t_kd": kd_df["k"].iloc[-1] - kd_df["d"].iloc[-1],
+            "_t_rsi": rsi_last - 50,
+            # 籌碼 raw
+            "_chip": chip,
         }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=_NEWS_FETCH_WORKERS) as pool:
@@ -123,6 +175,21 @@ def build_recommendation_table(
     table = pd.DataFrame(rows).T
     if table.empty:
         return table
+
+    # Composite factors: 基本面 and 技術面 are the mean of their sub-metrics'
+    # cross-sectional z-scores (so differently-scaled inputs combine fairly);
+    # 籌碼 is the single chip signal standardized. Each is z-scored again in the
+    # weighting loop, which is idempotent for already-standardized columns.
+    table["基本面"] = pd.concat(
+        [_zscore(table[c].astype(float)) for c in ["_f_rev", "_f_earn", "_f_margin", "_f_roe"]],
+        axis=1,
+    ).mean(axis=1)
+    table["技術面"] = pd.concat(
+        [_zscore(table[c].astype(float)) for c in ["_t_macd", "_t_kd", "_t_rsi"]],
+        axis=1,
+    ).mean(axis=1)
+    table["籌碼"] = _zscore(table["_chip"].astype(float))
+    table = table.drop(columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c == "_chip"])
 
     score = pd.Series(0.0, index=table.index)
     for factor, weight in weights.items():

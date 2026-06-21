@@ -448,25 +448,30 @@ with tab_reco:
             "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_tab3_{'tw' if is_tw else 'us'}"
         )
 
-    # 綜合評分的五大因子占比，緊接在「時間期間」等控制項下方一列呈現。
-    # 權重取自 recommend.FACTOR_WEIGHTS，避免與實際評分邏輯不同步。
+    # 綜合評分的八大因子占比，緊接在「時間期間」等控制項下方一列呈現。
+    # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
     _FACTOR_DISPLAY = {
         "期間報酬率": "期間報酬率",
-        "Sharpe Ratio": "Sharpe（風險調整報酬）",
-        "趨勢(價格/SMA50)": "價格趨勢（價格/SMA50）",
-        "估值(1/預估PE)": "估值（1/預估PE）",
-        "新聞情緒": "新聞情緒（近4日中文標題）",
+        "技術面": "技術面(RSI/KD/MACD)",
+        "趨勢(價格/SMA50)": "價格趨勢",
+        "Sharpe Ratio": "Sharpe",
+        "估值(1/預估PE)": "估值",
+        "基本面": "基本面",
+        "籌碼": "籌碼面",
+        "新聞情緒": "新聞情緒",
     }
     st.markdown(
-        f"**綜合評分 ＝ 下列五大因子加權（占比如下）**　"
+        f"**綜合評分 ＝ 下列八大因子加權（占比如下）**　"
         f"已依「時間期間」自動切換為 **{_HORIZON_LABEL[reco_horizon]}** 權重"
     )
     _fcols = st.columns(len(_FACTOR_DISPLAY))
     for _c, (_k, _label) in zip(_fcols, _FACTOR_DISPLAY.items()):
         _c.metric(_label, f"{reco_weights[_k] * 100:.0f}%")
+    chip_src = "台股三大法人買賣超（近5日）" if is_tw else "資金流向 CMF（量價推估）"
     st.caption(
-        "短期（≤1個月）重視價格動能與消息面、淡化估值；長期（≥1年）重視估值與風險調整報酬、"
-        "淡化短線動能；中期（3個月～半年、YTD）則居中平衡。"
+        "短期（≤1個月）重視價格動能、技術面與籌碼面、淡化估值與基本面；長期（≥1年）重視基本面、"
+        "估值與風險調整報酬、淡化短線動能與消息；中期（3個月～半年、YTD）則居中平衡。"
+        f"籌碼面資料來源：{chip_src}。"
     )
 
     st.subheader("基金經理人觀點：建議買入 / 賣出")
@@ -476,7 +481,8 @@ with tab_reco:
         scope_desc = "「美股近期成交量前 30 大」與「S&P 500 成分股」的聯集"
     st.caption(
         f"- **篩選範圍**：{scope_desc}\n"
-        "- **評分方式**：上列五因子計算「組內相對排序」，僅反映目前範圍內標的相對高低，非投資建議\n"
+        "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
+        "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
         "- **買賣價**：以最新收盤價估算；目標價依設定勝率反推歷史報酬率分布，未計入基本面與市況\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序"
     )
@@ -498,7 +504,9 @@ with tab_reco:
             recommend.add_price_targets(sell_df, "sell", currency, win_rate_pct3, period), "sell")
 
         _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
-        _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "RSI (14)", "綜合評分"]
+        # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
+        _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
+                       "RSI (14)", "綜合評分"]
         _PRICE_COLS = ["建議買入價", "建議賣出價", "目標賣出價", "逢低買回參考價"]
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:

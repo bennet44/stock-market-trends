@@ -36,6 +36,25 @@ def bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2.0) -
     return pd.DataFrame({"mid": mid, "upper": upper, "lower": lower})
 
 
+def chaikin_money_flow(
+    high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, window: int = 20
+) -> pd.Series:
+    """Chaikin Money Flow — a volume-weighted accumulation/distribution gauge.
+
+    For each bar the Money Flow Multiplier ((close-low)-(high-close))/(high-low)
+    weights that bar's volume by where the close sat in the range; CMF is the
+    rolling sum of that money-flow volume over `window` bars divided by total
+    volume, giving a value in roughly [-1, 1]. Positive = net buying pressure
+    (accumulation). Used as the US-market 籌碼 (capital-flow) proxy where true
+    institutional flow data isn't available. A zero-height bar (high == low)
+    contributes no multiplier (NaN), and is skipped by the rolling sums.
+    """
+    rng = (high - low).replace(0, np.nan)
+    mfm = ((close - low) - (high - close)) / rng
+    mfv = mfm * volume
+    return mfv.rolling(window).sum() / volume.rolling(window).sum()
+
+
 def kd(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 9) -> pd.DataFrame:
     """Stochastic KD oscillator using the conventional Taiwan-market formula.
 
