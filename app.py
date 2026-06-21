@@ -117,15 +117,16 @@ def _display_name(ticker: str) -> str:
     return f"{ticker}({name})" if name else ticker
 
 
-def _signal_color(side: str, win_rate: float | None) -> str:
+def _signal_color(side: str, frac: float) -> str:
     """CSS color for the merged table's buy/sell dot: green for buy, red for
-    sell, shaded by 預測準確機率 (higher → deeper, more saturated colour)
-    over a 0–40% range. Returns a `color: rgb(...)` declaration."""
-    f = min(max((win_rate or 0) / 40.0, 0.0), 1.0)
-    if side == "buy":  # light green -> dark green
-        r, g, b = int(190 - 190 * f), int(225 - 105 * f), int(190 - 190 * f)
-    else:              # light red -> dark red
-        r, g, b = int(245 - 75 * f), int(190 - 190 * f), int(190 - 190 * f)
+    sell, shaded by `frac` in [0,1] (0 = lightest, 1 = deepest). `frac` is the
+    table's min–max-normalized 預測準確機率, so the gradient always spans the
+    full visible range. Returns a `color: rgb(...)` declaration."""
+    f = min(max(frac, 0.0), 1.0)
+    if side == "buy":  # light green -> deep green
+        r, g, b = int(150 - 150 * f), int(210 - 110 * f), int(150 - 150 * f)
+    else:              # light red -> deep red
+        r, g, b = int(235 - 85 * f), int(120 - 120 * f), int(120 - 120 * f)
     return f"color: rgb({r},{g},{b})"
 
 
@@ -610,15 +611,24 @@ with tab_reco:
         merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
         _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
         _future = merged["預測準確機率"].tolist() if "預測準確機率" in merged else [None] * len(merged)
+        # Min–max normalize 預測準確機率 across the table so the green/red gradient
+        # always spans the full visible range (a fixed 0–40% scale made every dot
+        # look the same dark shade when win rates clustered high).
+        _vals = [w for w in _future if w is not None]
+        _fmin, _fmax = (min(_vals), max(_vals)) if _vals else (0.0, 1.0)
+        _span = (_fmax - _fmin) or 1.0
 
         def _signal_styles(df: pd.DataFrame) -> pd.DataFrame:
             css = pd.DataFrame("", index=df.index, columns=df.columns)
             loc = df.columns.get_loc("建議")
             for i, (side, w) in enumerate(zip(_sides, _future)):
-                css.iloc[i, loc] = _signal_color(side, w) + "; text-align: center; font-size: 20px"
+                frac = (w - _fmin) / _span if w is not None else 0.0
+                # Large bold glyph filling the cell + strengthened gradient colour.
+                css.iloc[i, loc] = (_signal_color(side, frac)
+                                    + "; text-align: center; font-size: 34px; font-weight: 900; line-height: 1")
             return css
 
-        st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔　— 圓點顏色越深＝預測準確機率越高")
+        st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔")
         st.dataframe(
             merged.style.apply(_signal_styles, axis=None),
             use_container_width=True, column_config=_column_config(merged),
