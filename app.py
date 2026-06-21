@@ -69,6 +69,14 @@ RECO_PERIOD_OPTIONS = {
     "今年至今(YTD)": {"fetch": "ytd", "lookback": None, "horizon": "medium"},
 }
 _HORIZON_LABEL = {"short": "短期", "medium": "中期", "long": "長期"}
+
+# Holding period (trading days) for the 買賣建議 tab's 歷史勝率/未來勝率 columns and
+# target prices. A preset dropdown plus a 自訂 (free-fill) option.
+RECO_HOLD_OPTIONS = {
+    "1天": 1, "3天": 3, "5天": 5, "1週": 5, "3週": 15,
+    "1個月": 21, "3個月": 63, "6個月": 126, "1年": 252, "3年": 756, "5年": 1260,
+}
+_HOLD_CUSTOM_LABEL = "自訂天數…"
 # Charts that render one trace/row per ticker (comparison overlay, correlation
 # heatmap, distribution histogram) become unreadable and slow past this many
 # tickers, so those views are capped — tables and the recommendation scan
@@ -446,7 +454,7 @@ with tab_compare_risk:
 
 # ---------- Tab 3: Buy/sell recommendations ----------
 with tab_reco:
-    col_period3, col_topn = st.columns(2)
+    col_period3, col_topn, col_hold = st.columns(3)
     with col_period3:
         period_label = st.selectbox(
             "時間期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
@@ -462,6 +470,21 @@ with tab_reco:
         top_n = st.selectbox(
             "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_tab3_{'tw' if is_tw else 'us'}"
         )
+    with col_hold:
+        hold_label = st.selectbox(
+            "持有天數", list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL], index=2,
+            key=f"hold_tab3_{'tw' if is_tw else 'us'}",
+            help="歷史勝率與未來勝率都以此持有天數（交易日）計算，買賣目標價也用同一持有期。",
+        )
+        if hold_label == _HOLD_CUSTOM_LABEL:
+            hold_days = int(st.number_input(
+                "自訂持有天數（交易日）", min_value=1, max_value=1260, value=5, step=1,
+                key=f"hold_custom_tab3_{'tw' if is_tw else 'us'}",
+            ))
+            hold_display = f"{hold_days} 個交易日"
+        else:
+            hold_days = RECO_HOLD_OPTIONS[hold_label]
+            hold_display = hold_label
 
     # 綜合評分的八大因子占比，緊接在「時間期間」等控制項下方一列呈現。
     # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
@@ -498,8 +521,9 @@ with tab_reco:
         f"- **篩選範圍**：{scope_desc}\n"
         "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
         "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
-        "- **買賣價**：以最新收盤價估算，目標價依歷史報酬率分布推算（持有約 1 週）\n"
-        "- **歷史勝率**：該股歷史上持有約 1 週「上漲（買入）／下跌（賣出）」的比例，供你依個人喜好判斷\n"
+        f"- **買賣價**：以最新收盤價估算，目標價依歷史報酬率分布推算（持有 {hold_display}）\n"
+        f"- **歷史勝率**：該股歷史上持有 {hold_display}「上漲（買入）／下跌（賣出）」的比例\n"
+        f"- **未來勝率**：依建議買入／賣出價，歷史上持有 {hold_display} 達到該目標價的機率，供你依個人喜好判斷\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序"
     )
     if is_tw:
@@ -515,9 +539,9 @@ with tab_reco:
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
-            recommend.add_price_targets(buy_df, "buy", currency, RECO_TARGET_WIN_RATE, period), "buy")
+            recommend.add_price_targets(buy_df, "buy", currency, RECO_TARGET_WIN_RATE, hold_days), "buy")
         sell_df = recommend.add_reason(
-            recommend.add_price_targets(sell_df, "sell", currency, RECO_TARGET_WIN_RATE, period), "sell")
+            recommend.add_price_targets(sell_df, "sell", currency, RECO_TARGET_WIN_RATE, hold_days), "sell")
 
         _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
@@ -536,7 +560,7 @@ with tab_reco:
             config = {}
             # 獲利% and 歷史勝率 are already stored as percentages (not fractions),
             # so they only get the %% format, not the *100 in _format_reco.
-            for col in _PCT_COLS + ["獲利%", "歷史勝率"]:
+            for col in _PCT_COLS + ["獲利%", "歷史勝率", "未來勝率"]:
                 if col in df:
                     config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
             for col in _PLAIN_COLS:

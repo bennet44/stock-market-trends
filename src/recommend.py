@@ -223,33 +223,40 @@ PRICE_TARGET_HOLD_DAYS = 5
 
 def add_price_targets(
     df: pd.DataFrame, side: str, currency: str = "$",
-    win_rate_pct: float = 60, period: str = "1y",
+    win_rate_pct: float = 60, hold_days: int = PRICE_TARGET_HOLD_DAYS,
+    hist_period: str = "10y",
 ) -> pd.DataFrame:
-    """Attach an entry price plus a win-rate-driven target price.
+    """Attach an entry price, a target price, and two per-stock win rates.
 
-    For each ticker, pulls its own price history and builds an empirical
-    distribution of forward returns (PRICE_TARGET_HOLD_DAYS trading days
-    ahead). side="buy": the target is the profit-taking move achieved with
-    win_rate_pct%% probability among historically up periods. side="sell":
-    the target is a pullback worth watching to buy back in, sized to the
-    win_rate_pct%% percentile among historically down periods (since "sell"
-    here means reduce/avoid, not short selling).
+    For each ticker, pulls a long price history (hist_period) and builds the
+    empirical distribution of forward returns over `hold_days` trading days.
+    - 目標賣出價/逢低買回參考價: the move at the win_rate_pct percentile among
+      historically up (buy) / down (sell) periods.
+    - 歷史勝率: how often a hold_days hold moved the right way at all (up for
+      buy, down for sell) — the stock's directional hit rate.
+    - 未來勝率: how often it reached the suggested target move specifically —
+      i.e. the historical probability that buying/selling at the suggested
+      price would have hit the target within hold_days.
+    A long hist_period (not the scoring window) is used so even multi-month
+    holds have enough forward-return samples.
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
-    profit_pcts, targets, win_rates = [], [], []
+    profit_pcts, targets, hist_wins, future_wins = [], [], [], []
     for t, p in zip(out.index, price):
-        hist = dl.get_price_history(t, period=period)
+        hist = dl.get_price_history(t, period=hist_period)
         close = hist["Close"] if not hist.empty else pd.Series(dtype=float)
-        fwd_returns = close.pct_change(periods=PRICE_TARGET_HOLD_DAYS).dropna()
-        subset = fwd_returns[fwd_returns > 0] if side == "buy" else fwd_returns[fwd_returns < 0]
+        fwd = close.pct_change(periods=hold_days).dropna()
+        subset = fwd[fwd > 0] if side == "buy" else fwd[fwd < 0]
         move = np.percentile(subset, 100 - win_rate_pct) if not subset.empty else None
         profit_pcts.append(move * 100 if move is not None else None)
         targets.append(p * (1 + move) if move is not None and pd.notnull(p) else None)
-        # Per-stock historical 勝率: how often a PRICE_TARGET_HOLD_DAYS-day hold
-        # moved the "right" way for this side (up for buy, down for sell) — a
-        # stock-specific directional hit rate the user can judge against.
-        win_rates.append(len(subset) / len(fwd_returns) * 100 if len(fwd_returns) else None)
+        hist_wins.append(len(subset) / len(fwd) * 100 if len(fwd) else None)
+        if move is not None and len(fwd):
+            hit = (fwd >= move).mean() if side == "buy" else (fwd <= move).mean()
+            future_wins.append(hit * 100)
+        else:
+            future_wins.append(None)
     out["獲利%"] = profit_pcts
     if side == "buy":
         out["建議買入價"] = price
@@ -257,7 +264,9 @@ def add_price_targets(
     else:
         out["建議賣出價"] = price
         out["逢低買回參考價"] = targets
-    out["歷史勝率"] = win_rates  # placed last so it sits just before 原因說明
+    # Placed last (in this order) so they sit just before 原因說明.
+    out["歷史勝率"] = hist_wins
+    out["未來勝率"] = future_wins
     return out.drop(columns=["最新收盤價"])
 
 
