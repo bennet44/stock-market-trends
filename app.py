@@ -504,13 +504,23 @@ with tab_fcn:
             key=f"fcn_n_assets_{'tw' if is_tw else 'us'}",
         )
     with col_tickers:
-        fcn_default_tickers = ", ".join(
+        # Switching 市場 only builds the *active* market's FCN widgets, so the
+        # other market's text_input (e.g. fcn_tickers_us_3) isn't rendered that
+        # run and Streamlit garbage-collects its widget state — coming back, the
+        # field would reset to the hardcoded default. Keep the last-entered value
+        # in a plain (non-widget) session_state key, which is never GC'd, and use
+        # it as the field's default so a 台股⇄美股 round-trip preserves the input.
+        # The key includes n_assets so changing 標的數量 still repopulates with
+        # that many default tickers.
+        _fcn_tickers_shadow_key = f"fcn_tickers_value_{'tw' if is_tw else 'us'}_{n_assets}"
+        fcn_default_tickers = st.session_state.get(_fcn_tickers_shadow_key) or ", ".join(
             (["2330", "2317", "2454", "2412", "2882"] if is_tw else ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"])[:n_assets]
         )
         fcn_ticker_label = f"標的股票代號（共 {n_assets} 個，以「,」區隔）" + ("（台股代碼，例如 2330）" if is_tw else "")
         fcn_raw_tickers = st.text_input(
             fcn_ticker_label, value=fcn_default_tickers, key=f"fcn_tickers_{'tw' if is_tw else 'us'}_{n_assets}"
         )
+        st.session_state[_fcn_tickers_shadow_key] = fcn_raw_tickers
     fcn_tickers_input = [t.strip().upper() for t in fcn_raw_tickers.split(",") if t.strip()]
     fcn_tickers = [universe.resolve_tw_ticker(t) for t in fcn_tickers_input] if is_tw else fcn_tickers_input
 
