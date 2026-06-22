@@ -125,16 +125,6 @@ MAX_CHART_TICKERS = 30
 # input now lives on the recommendation tab), so its Sharpe Ratio uses this
 # fixed default instead.
 DEFAULT_RISK_FREE_RATE = 0.04
-# Holding-period choices for Tab 1's win-rate-based buy/sell price reference:
-# trading days drive the historical return distribution, calendar days drive
-# the displayed "query date ~ target date" label.
-PRICE_TARGET_HORIZONS = {
-    "預測期間(1天)": {"trading_days": 1, "calendar_days": 1},
-    "預測期間(3天)": {"trading_days": 3, "calendar_days": 3},
-    "短期（1週）": {"trading_days": 5, "calendar_days": 7},
-    "中期（6個月）": {"trading_days": 126, "calendar_days": 182},
-    "長期（1年）": {"trading_days": 252, "calendar_days": 365},
-}
 # FCN tab: Monte Carlo path count (vectorized, so this stays fast even for a
 # multi-year tenor or a several-asset worst-of basket).
 FCN_N_SIMS = 8000
@@ -320,10 +310,25 @@ with tab_overview:
         st.markdown("##### 建議買入／賣出價格參考")
         col_h1, col_a1 = st.columns(2)
         with col_h1:
-            horizon_label = st.selectbox(
-                "持有天數(今日算起)", list(PRICE_TARGET_HORIZONS.keys()), index=2,
-                key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
+            # Same 持有天數 options as the 買賣建議 tab (RECO_HOLD_OPTIONS + 自訂).
+            _pt_hold_key = f"price_target_horizon_{'tw' if is_tw else 'us'}"
+            _pt_hold_opts = list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL]
+            # Drop a stale persisted value from the old option set so the
+            # selectbox doesn't raise "default value not in options".
+            if st.session_state.get(_pt_hold_key) not in _pt_hold_opts:
+                st.session_state.pop(_pt_hold_key, None)
+            hold_label1 = st.selectbox(
+                "持有天數(今日算起)", _pt_hold_opts, index=2, key=_pt_hold_key,
             )
+            if hold_label1 == _HOLD_CUSTOM_LABEL:
+                hold_days = int(st.number_input(
+                    "自訂持有天數（交易日）", min_value=1, max_value=1260, value=5, step=1,
+                    key=f"price_target_hold_custom_{'tw' if is_tw else 'us'}",
+                ))
+                hold_disp1 = f"{hold_days} 個交易日"
+            else:
+                hold_days = RECO_HOLD_OPTIONS[hold_label1]
+                hold_disp1 = hold_label1 if hold_label1 == f"{hold_days}天" else f"{hold_label1}（{hold_days} 交易日）"
         with col_a1:
             aggr_label = st.selectbox(
                 "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
@@ -331,15 +336,13 @@ with tab_overview:
                 help="保守＝目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
             )
         aggr_pct = RECO_AGGRESSIVENESS[aggr_label]
-        horizon = PRICE_TARGET_HORIZONS[horizon_label]
-        hold_days, calendar_days = horizon["trading_days"], horizon["calendar_days"]
         query_date = dt.date.today()
-        target_date = query_date + dt.timedelta(days=calendar_days)
+        target_date = query_date + dt.timedelta(days=round(hold_days * 7 / 5))  # trading→calendar
         st.caption(
             "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
             "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
             "預測準確機率＝路徑式回測（持有期內最高/最低觸及的實測比例）。"
-            f"依過去 1 年、持有 {hold_days} 個交易日（{horizon_label}）估算，"
+            f"依過去 1 年、持有 {hold_disp1} 估算，"
             f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
             f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
         )
