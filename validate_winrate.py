@@ -44,16 +44,22 @@ def main():
     df = pd.DataFrame({"最新收盤價": [p]}, index=[ticker])
     ok = True
     for name, n_days in [("短", 5), ("中", 63), ("長", 252)]:
+        horizon = recommend.horizon_for_hold_days(n_days)
         fwd = close.pct_change(n_days).dropna()
         u = float(np.median(fwd[fwd > 0]))
         d = float(np.median(fwd[fwd < 0]))
+        # Apply the same technical nudge add_price_targets uses, so the
+        # independent recomputation thresholds match the displayed ones.
+        bias = recommend.technical_bias(close, high, low, horizon)
+        u_adj = u * (1 + recommend.TECH_BIAS_BETA * bias)
+        d_adj = d * (1 - recommend.TECH_BIAS_BETA * bias)
 
-        b = recommend.add_price_targets(df, "buy", "NT$", n_days)
+        b = recommend.add_price_targets(df, "buy", "NT$", n_days, horizon=horizon)
         disp_b = b["預測準確機率"].iloc[0]
-        ind_b = _independent_touch(close, high, n_days, u, up=True)
-        s = recommend.add_price_targets(df, "sell", "NT$", n_days)
+        ind_b = _independent_touch(close, high, n_days, u_adj, up=True)
+        s = recommend.add_price_targets(df, "sell", "NT$", n_days, horizon=horizon)
         disp_s = s["預測準確機率"].iloc[0]
-        ind_s = _independent_touch(close, low, n_days, d, up=False)
+        ind_s = _independent_touch(close, low, n_days, d_adj, up=False)
 
         print(f"{name}({n_days}日) 買: 進場={b['建議買入價'].iloc[0]:.0f} 賣出={b['目標賣出價'].iloc[0]:.0f} "
               f"獲利={b['獲利%'].iloc[0]:.1f}% | 預測準確機率 顯示={disp_b:.2f}% 獨立={ind_b:.2f}% 誤差={abs(disp_b-ind_b):.3f}%")

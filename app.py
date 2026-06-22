@@ -324,13 +324,14 @@ with tab_overview:
         target_date = query_date + dt.timedelta(days=calendar_days)
         st.caption(
             "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
-            "取價＝現價×(1＋歷史漲跌幅中位數)；預測準確機率＝路徑式回測（持有期內最高/最低觸及的比例）。"
+            "取價＝現價×(1＋歷史漲跌幅中位數，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
+            "預測準確機率＝路徑式回測（持有期內最高/最低觸及的比例）。"
             f"依過去 1 年、持有 {hold_days} 個交易日（{horizon_label}）估算，"
             f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
             f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
         )
-        # Same logic as the 買賣建議 tab (median move pricing + path-based touch
-        # rate), but on a fixed 1-year window, so 統計期間皆是 1 年.
+        # Same logic as the 買賣建議 tab (median move pricing, technical nudge,
+        # path-based touch rate), but on a fixed 1-year window, so 統計期間皆是 1 年.
         pt = dl.get_price_history(primary, period="1y")
         if pt.empty:
             pt = df  # chart data (non-empty here) as a safety net
@@ -339,6 +340,13 @@ with tab_overview:
         ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
         up_move = float(np.median(ups)) if not ups.empty else None
         down_move = float(np.median(downs)) if not downs.empty else None
+        # Technical nudge (布林/SMA多頭/型態 + 動能), same as the 買賣建議 formula.
+        _bias = recommend.technical_bias(pt_close, pt_high, pt_low,
+                                         recommend.horizon_for_hold_days(hold_days))
+        if up_move is not None:
+            up_move *= (1 + recommend.TECH_BIAS_BETA * _bias)
+        if down_move is not None:
+            down_move *= (1 - recommend.TECH_BIAS_BETA * _bias)
 
         col_buy, col_sell = st.columns(2)
         with col_buy:
@@ -541,7 +549,7 @@ with tab_reco:
     # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
     _FACTOR_DISPLAY = {
         "期間報酬率": "期間報酬率",
-        "技術面": "技術面(RSI/KD/MACD)",
+        "技術面": "技術面(動能+布林+SMA+型態)",
         "趨勢(價格/SMA50)": "價格趨勢",
         "Sharpe Ratio": "Sharpe",
         "估值(1/預估PE)": "估值",
@@ -577,7 +585,9 @@ with tab_reco:
         f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序\n"
         "\n"
-        f"**公式**（u＝{hold_display}上漲報酬中位數、d＝下跌報酬中位數〔d<0〕）：\n"
+        f"**公式**（u＝{hold_display}上漲報酬中位數、d＝下跌報酬中位數〔d<0〕；"
+        "並依技術訊號微調：u→u×(1+0.4×技術偏多度)、d→d×(1−0.4×技術偏多度)，"
+        "技術偏多度由 布林/SMA多頭/型態+動能 依持有天數加權）：\n"
         "1. 建議買入價＝現價×(1+d)〔買〕／ 現價×(1+u)〔賣〕\n"
         "2. 建議賣出價＝現價×(1+u)〔買〕／ 現價×(1+d)〔賣〕\n"
         "3. 獲利%＝建議賣出價 / 建議買入價 − 1\n"
@@ -596,9 +606,9 @@ with tab_reco:
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
-            recommend.add_price_targets(buy_df, "buy", currency, hold_days), "buy")
+            recommend.add_price_targets(buy_df, "buy", currency, hold_days, horizon=reco_horizon), "buy")
         sell_df = recommend.add_reason(
-            recommend.add_price_targets(sell_df, "sell", currency, hold_days), "sell")
+            recommend.add_price_targets(sell_df, "sell", currency, hold_days, horizon=reco_horizon), "sell")
 
         _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
@@ -652,7 +662,7 @@ with tab_reco:
         # Min–max normalize 預測準確機率 across the table so the green/red gradient
         # always spans the full visible range (a fixed 0–40% scale made every dot
         # look the same dark shade when win rates clustered high).
-        _vals = [w for w in _future if w is not None]
+        _vals = [w for w in _future if w is not None and pd.notna(w)]
         _fmin, _fmax = (min(_vals), max(_vals)) if _vals else (0.0, 1.0)
         _span = (_fmax - _fmin) or 1.0
 
@@ -660,7 +670,7 @@ with tab_reco:
             css = pd.DataFrame("", index=df.index, columns=df.columns)
             loc = df.columns.get_loc("建議")
             for i, (side, w) in enumerate(zip(_sides, _future)):
-                frac = (w - _fmin) / _span if w is not None else 0.0
+                frac = (w - _fmin) / _span if (w is not None and pd.notna(w)) else 0.0
                 rgb = _signal_rgb(side, frac)
                 # Fill the whole cell with the gradient colour; matching text
                 # colour hides the ● glyph so the cell reads as a solid block.

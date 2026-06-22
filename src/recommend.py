@@ -250,6 +250,57 @@ def top_buy_sell(table: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFram
 
 PRICE_TARGET_HOLD_DAYS = 5
 
+# How much the per-stock technical bias may stretch/shrink the median move when
+# pricing the buy/sell levels (bias∈[-1,1] → move scaled within ±this fraction).
+TECH_BIAS_BETA = 0.4
+
+
+def horizon_for_hold_days(hold_days: int) -> str:
+    """Map a holding period (trading days) to a short/medium/long horizon, so
+    the price-target technical adjustment uses the matching sub-weights."""
+    if hold_days <= 10:
+        return "short"
+    if hold_days <= 63:
+        return "medium"
+    return "long"
+
+
+def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: str = "medium") -> float:
+    """Per-stock "how bullish" score in roughly [-1, 1], a horizon-weighted blend
+    of six self-contained (absolute, not cross-sectional) technical signals —
+    the same six that make up the 技術面 factor. Positive = technically bullish.
+    Returns 0.0 (neutral) when nothing can be computed (e.g. too few bars).
+    """
+    if len(close) < 2:
+        return 0.0
+    last = close.iloc[-1]
+    sigs: dict[str, float] = {}
+    hist = ta.macd(close)["hist"].iloc[-1]
+    if pd.notna(hist) and last:
+        sigs["macd"] = float(np.tanh(hist / last * 50))
+    kd = ta.kd(high, low, close)
+    if pd.notna(kd["k"].iloc[-1]) and pd.notna(kd["d"].iloc[-1]):
+        sigs["kd"] = float(np.clip((kd["k"].iloc[-1] - kd["d"].iloc[-1]) / 100, -1, 1))
+    rsi = ta.rsi(close).iloc[-1]
+    if pd.notna(rsi):
+        sigs["rsi"] = float(np.clip((rsi - 50) / 50, -1, 1))
+    bb = ta.bollinger_bands(close)
+    up, lo = bb["upper"].iloc[-1], bb["lower"].iloc[-1]
+    if pd.notna(up) and up != lo:
+        sigs["bb"] = float(np.clip(((last - lo) / (up - lo) - 0.5) * 2, -1, 1))
+    s5, s10, s20 = ta.sma(close, 5).iloc[-1], ta.sma(close, 10).iloc[-1], ta.sma(close, 20).iloc[-1]
+    if pd.notna(s5) and pd.notna(s10) and pd.notna(s20):
+        sigs["sma"] = float(((s5 > s10) + (s10 > s20) + (last > s20) - 1.5) / 1.5)
+    if last:
+        slope = np.polyfit(np.arange(len(close)), close.values, 1)[0]
+        sigs["pat"] = float(np.tanh(slope / last * len(close)))
+
+    subw = TECH_SUBWEIGHTS_BY_HORIZON.get(horizon, TECH_SUBWEIGHTS_BY_HORIZON["medium"])
+    wsum = sum(subw[k] for k in sigs)
+    if not wsum:
+        return 0.0
+    return sum(subw[k] * v for k, v in sigs.items()) / wsum
+
 
 def forward_touch_rate(close, extreme, n_days: int, threshold: float, direction: str):
     """Path-based "touch" probability over a forward window.
@@ -278,18 +329,21 @@ def forward_touch_rate(close, extreme, n_days: int, threshold: float, direction:
 def add_price_targets(
     df: pd.DataFrame, side: str, currency: str = "$",
     hold_days: int = PRICE_TARGET_HOLD_DAYS, hist_period: str = "10y",
+    horizon: str = "medium",
 ) -> pd.DataFrame:
     """Attach a dynamic entry price, a target price, profit %, and 預測準確機率.
 
     Sized off a long history (hist_period) over `hold_days` trading days, with
-    u = median of up moves and d = median of down moves (d < 0):
-    - buy:  進場 = 現價×(1+d) (逢低承接), 賣出 = 現價×(1+u) (典型漲幅目標).
-    - sell: 進場 = 現價×(1+u) (逢高減碼), 賣出 = 現價×(1+d) (逢低買回目標).
-    - 獲利%: 賣出/進場 − 1 (buy 為正、sell 為負，獲利來自下跌).
-    - 預測準確機率: path-based — the historical % of `hold_days` windows whose
-      forward high (buy) reaches the up target, or forward low (sell) reaches
-      the down target, relative to the day's close. Uses High/Low for the
-      "touch", falling back to Close.
+    u = median of up moves and d = median of down moves (d < 0), then nudged by
+    the stock's technical_bias (∈[-1,1], horizon-weighted): bullish stretches the
+    up target and shrinks the buy dip, bearish does the reverse — bounded by
+    TECH_BIAS_BETA so 買<現價<賣 always holds.
+    - buy:  進場 = 現價×(1+d_adj) (逢低承接), 賣出 = 現價×(1+u_adj) (漲幅目標).
+    - sell: 進場 = 現價×(1+u_adj) (逢高減碼), 賣出 = 現價×(1+d_adj) (逢低買回).
+    - 獲利%: 賣出/進場 − 1.
+    - 預測準確機率: path-based — historical % of `hold_days` windows whose forward
+      high (buy) / low (sell) touches the *adjusted* target relative to the day's
+      close. Uses High/Low for the "touch", falling back to Close.
     """
     out = df.copy()
     price = out["最新收盤價"].astype(float)
@@ -306,6 +360,12 @@ def add_price_targets(
         ups, downs = fwd[fwd > 0], fwd[fwd < 0]
         u = float(np.median(ups)) if len(ups) else None
         d = float(np.median(downs)) if len(downs) else None
+        # Technical nudge: bullish -> bigger up target & shallower buy dip.
+        bias = technical_bias(close, high, low, horizon)
+        if u is not None:
+            u = u * (1 + TECH_BIAS_BETA * bias)
+        if d is not None:
+            d = d * (1 - TECH_BIAS_BETA * bias)
         if side == "buy":
             entry = p * (1 + d) if d is not None else None
             target = p * (1 + u) if u is not None else None
