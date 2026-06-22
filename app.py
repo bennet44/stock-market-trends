@@ -590,7 +590,7 @@ with tab_reco:
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
         reco_table = recommend.build_recommendation_table(
             reco_universe, period, DEFAULT_RISK_FREE_RATE,
-            lookback_days=reco_lookback, weights=reco_weights)
+            lookback_days=reco_lookback, weights=reco_weights, horizon=reco_horizon)
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認統計期間。")
     else:

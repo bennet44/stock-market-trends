@@ -55,6 +55,16 @@ FACTOR_WEIGHTS_BY_HORIZON = {
 # Default / backward-compatible weights when no horizon is specified.
 FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 
+# Sub-weights *inside* the 技術面 factor, switched by horizon. Six sub-signals:
+# momentum (MACD/KD/RSI), Bollinger %B (bb), SMA bullish-alignment (sma), and
+# trend/pattern regression slope (pat). Short windows lean on momentum &
+# Bollinger; long windows lean on SMA alignment & trend. Each row sums to 1.0.
+TECH_SUBWEIGHTS_BY_HORIZON = {
+    "short":  {"macd": 0.20, "kd": 0.15, "rsi": 0.15, "bb": 0.25, "sma": 0.10, "pat": 0.15},
+    "medium": {"macd": 0.15, "kd": 0.10, "rsi": 0.10, "bb": 0.15, "sma": 0.30, "pat": 0.20},
+    "long":   {"macd": 0.10, "kd": 0.05, "rsi": 0.05, "bb": 0.05, "sma": 0.50, "pat": 0.25},
+}
+
 _NEWS_FETCH_WORKERS = 12
 
 _FACTOR_LABELS = {
@@ -89,6 +99,7 @@ def _news_sentiment(ticker: str, company_name: str | None) -> float:
 def build_recommendation_table(
     tickers: list[str], period: str, risk_free_rate: float = 0.0,
     lookback_days: int | None = None, weights: dict[str, float] | None = None,
+    horizon: str = "medium",
 ) -> pd.DataFrame:
     """Score each ticker into a cross-sectional composite rank.
 
@@ -126,11 +137,24 @@ def build_recommendation_table(
         pe = info.get("forwardPE") or info.get("trailingPE")
         company_names[t] = info.get("shortName")
 
-        # 技術面 sub-signals (each a "bullish momentum" continuous value, NaN when
-        # the window is too short — neutralized by _zscore later).
+        # 技術面 sub-signals (each a "more bullish = higher" continuous value, NaN
+        # when the window is too short — neutralized by _zscore later).
         macd_hist = ta.macd(close)["hist"].iloc[-1]
         kd_df = ta.kd(high, low, close)
         rsi_last = ta.rsi(close).iloc[-1]
+        # 布林 %B: where the close sits in the band (centred at 0); >0 upper half.
+        bb = ta.bollinger_bands(close)
+        bb_up, bb_lo = bb["upper"].iloc[-1], bb["lower"].iloc[-1]
+        pct_b = ((last_close - bb_lo) / (bb_up - bb_lo) - 0.5) if pd.notna(bb_up) and bb_up != bb_lo else np.nan
+        # SMA 多頭排列: how many of SMA5>SMA10, SMA10>SMA20, 收盤>SMA20 hold (centred).
+        sma5, sma10, sma20 = ta.sma(close, 5).iloc[-1], ta.sma(close, 10).iloc[-1], ta.sma(close, 20).iloc[-1]
+        if pd.notna(sma5) and pd.notna(sma10) and pd.notna(sma20):
+            sma_align = (sma5 > sma10) + (sma10 > sma20) + (last_close > sma20) - 1.5
+        else:
+            sma_align = np.nan
+        # 型態趨勢: normalized slope of a linear fit over the window (trend strength).
+        pattern = (np.polyfit(np.arange(len(close)), close.values, 1)[0] / last_close
+                   if last_close and len(close) >= 2 else np.nan)
 
         # 籌碼 (capital flow): TW = recent 三大法人 net normalized by shares
         # outstanding; US = Chaikin Money Flow over the window.
@@ -158,6 +182,9 @@ def build_recommendation_table(
             "_t_macd": macd_hist / last_close if last_close else np.nan,
             "_t_kd": kd_df["k"].iloc[-1] - kd_df["d"].iloc[-1],
             "_t_rsi": rsi_last - 50,
+            "_t_bb": pct_b,
+            "_t_sma": sma_align,
+            "_t_pat": pattern,
             # 籌碼 raw
             "_chip": chip,
         }
@@ -185,10 +212,12 @@ def build_recommendation_table(
         [_zscore(table[c].astype(float)) for c in ["_f_rev", "_f_earn", "_f_margin", "_f_roe"]],
         axis=1,
     ).mean(axis=1)
-    table["技術面"] = pd.concat(
-        [_zscore(table[c].astype(float)) for c in ["_t_macd", "_t_kd", "_t_rsi"]],
-        axis=1,
-    ).mean(axis=1)
+    # 技術面 = horizon-weighted blend of six sub-signals' cross-sectional z-scores
+    # (momentum MACD/KD/RSI + 布林 + SMA多頭排列 + 型態趨勢); see TECH_SUBWEIGHTS_BY_HORIZON.
+    _subw = TECH_SUBWEIGHTS_BY_HORIZON.get(horizon, TECH_SUBWEIGHTS_BY_HORIZON["medium"])
+    table["技術面"] = sum(
+        _subw[k] * _zscore(table[f"_t_{k}"].astype(float)) for k in _subw
+    )
     table["籌碼"] = _zscore(table["_chip"].astype(float))
     table = table.drop(columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c == "_chip"])
 
