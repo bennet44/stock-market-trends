@@ -329,12 +329,14 @@ def forward_touch_rate(close, extreme, n_days: int, threshold: float, direction:
 def add_price_targets(
     df: pd.DataFrame, side: str, currency: str = "$",
     hold_days: int = PRICE_TARGET_HOLD_DAYS, hist_period: str = "10y",
-    horizon: str = "medium",
+    horizon: str = "medium", aggressiveness: int = 50,
 ) -> pd.DataFrame:
     """Attach a dynamic entry price, a target price, profit %, and 預測準確機率.
 
     Sized off a long history (hist_period) over `hold_days` trading days, with
-    u = median of up moves and d = median of down moves (d < 0), then nudged by
+    u = the `aggressiveness`-th percentile of up moves and d the matching
+    percentile of down moves (aggressiveness=50 → median; lower = more
+    conservative/closer targets, higher = more aggressive/farther), then nudged by
     the stock's technical_bias (∈[-1,1], horizon-weighted): bullish stretches the
     up target and shrinks the buy dip, bearish does the reverse — bounded by
     TECH_BIAS_BETA so 買<現價<賣 always holds.
@@ -358,8 +360,8 @@ def add_price_targets(
         low = hist["Low"] if "Low" in hist else close
         fwd = close.pct_change(periods=hold_days).dropna()
         ups, downs = fwd[fwd > 0], fwd[fwd < 0]
-        u = float(np.median(ups)) if len(ups) else None
-        d = float(np.median(downs)) if len(downs) else None
+        u = float(np.percentile(ups, aggressiveness)) if len(ups) else None
+        d = float(np.percentile(downs, 100 - aggressiveness)) if len(downs) else None
         # Technical nudge: bullish -> bigger up target & shallower buy dip.
         bias = technical_bias(close, high, low, horizon)
         if u is not None:

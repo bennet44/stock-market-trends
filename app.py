@@ -112,6 +112,10 @@ RECO_HOLD_OPTIONS = {
     "1個月": 21, "3個月": 63, "6個月": 126, "1年": 252, "3年": 756, "5年": 1260,
 }
 _HOLD_CUSTOM_LABEL = "自訂天數…"
+
+# 目標積極度 → percentile of the favorable move used for the buy/sell target
+# (中性=50 = median = the prior behaviour; 保守 closer/easier, 積極 farther).
+RECO_AGGRESSIVENESS = {"保守": 30, "中性": 50, "積極": 70}
 # Charts that render one trace/row per ticker (comparison overlay, correlation
 # heatmap, distribution histogram) become unreadable and slow past this many
 # tickers, so those views are capped — tables and the recommendation scan
@@ -314,18 +318,27 @@ with tab_overview:
                    f"{(latest / prev - 1) * 100:.2f}%")
 
         st.markdown("##### 建議買入／賣出價格參考")
-        horizon_label = st.selectbox(
-            "持有天數(今日算起)", list(PRICE_TARGET_HORIZONS.keys()), index=2,
-            key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
-        )
+        col_h1, col_a1 = st.columns(2)
+        with col_h1:
+            horizon_label = st.selectbox(
+                "持有天數(今日算起)", list(PRICE_TARGET_HORIZONS.keys()), index=2,
+                key=f"price_target_horizon_{'tw' if is_tw else 'us'}",
+            )
+        with col_a1:
+            aggr_label = st.selectbox(
+                "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
+                key=f"price_target_aggr_{'tw' if is_tw else 'us'}",
+                help="保守＝目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
+            )
+        aggr_pct = RECO_AGGRESSIVENESS[aggr_label]
         horizon = PRICE_TARGET_HORIZONS[horizon_label]
         hold_days, calendar_days = horizon["trading_days"], horizon["calendar_days"]
         query_date = dt.date.today()
         target_date = query_date + dt.timedelta(days=calendar_days)
         st.caption(
             "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
-            "取價＝現價×(1＋歷史漲跌幅中位數，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
-            "預測準確機率＝路徑式回測（持有期內最高/最低觸及的比例）。"
+            "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
+            "預測準確機率＝路徑式回測（持有期內最高/最低觸及的實測比例）。"
             f"依過去 1 年、持有 {hold_days} 個交易日（{horizon_label}）估算，"
             f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
             f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
@@ -338,8 +351,8 @@ with tab_overview:
         pt_close, pt_high, pt_low = pt["Close"], pt["High"], pt["Low"]
         fwd_returns = pt_close.pct_change(periods=hold_days).dropna()
         ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
-        up_move = float(np.median(ups)) if not ups.empty else None
-        down_move = float(np.median(downs)) if not downs.empty else None
+        up_move = float(np.percentile(ups, aggr_pct)) if not ups.empty else None
+        down_move = float(np.percentile(downs, 100 - aggr_pct)) if not downs.empty else None
         # Technical nudge (布林/SMA多頭/型態 + 動能), same as the 買賣建議 formula.
         _bias = recommend.technical_bias(pt_close, pt_high, pt_low,
                                          recommend.horizon_for_hold_days(hold_days))
@@ -509,7 +522,7 @@ with tab_compare_risk:
 
 # ---------- Tab 3: Buy/sell recommendations ----------
 with tab_reco:
-    col_period3, col_topn, col_hold = st.columns(3)
+    col_period3, col_topn, col_hold, col_aggr = st.columns(4)
     with col_period3:
         period_label = st.selectbox(
             "統計期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
@@ -544,6 +557,13 @@ with tab_reco:
             # used in the calculation (e.g. "1個月（21 交易日）"). Day-count labels
             # like "5天" already equal the count, so no suffix is added.
             hold_display = hold_label if hold_label == f"{hold_days}天" else f"{hold_label}（{hold_days} 交易日）"
+    with col_aggr:
+        aggr_label3 = st.selectbox(
+            "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
+            key=f"aggr_tab3_{'tw' if is_tw else 'us'}",
+            help="保守＝買賣目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
+        )
+        reco_aggr = RECO_AGGRESSIVENESS[aggr_label3]
 
     # 綜合評分的八大因子占比，緊接在「統計期間」等控制項下方一列呈現。
     # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
@@ -585,7 +605,7 @@ with tab_reco:
         f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序\n"
         "\n"
-        f"**公式**（u＝{hold_display}上漲報酬中位數、d＝下跌報酬中位數〔d<0〕；"
+        f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
         "並依技術訊號微調：u→u×(1+0.4×技術偏多度)、d→d×(1−0.4×技術偏多度)，"
         "技術偏多度由 布林/SMA多頭/型態+動能 依持有天數加權）：\n"
         "1. 建議買入價＝現價×(1+d)〔買〕／ 現價×(1+u)〔賣〕\n"
@@ -606,9 +626,11 @@ with tab_reco:
     else:
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
         buy_df = recommend.add_reason(
-            recommend.add_price_targets(buy_df, "buy", currency, hold_days, horizon=reco_horizon), "buy")
+            recommend.add_price_targets(buy_df, "buy", currency, hold_days,
+                                        horizon=reco_horizon, aggressiveness=reco_aggr), "buy")
         sell_df = recommend.add_reason(
-            recommend.add_price_targets(sell_df, "sell", currency, hold_days, horizon=reco_horizon), "sell")
+            recommend.add_price_targets(sell_df, "sell", currency, hold_days,
+                                        horizon=reco_horizon, aggressiveness=reco_aggr), "sell")
 
         _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
