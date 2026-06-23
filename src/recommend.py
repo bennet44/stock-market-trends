@@ -104,15 +104,24 @@ def _news_sentiment(ticker: str, company_name: str | None) -> tuple[float, str]:
     return score, summary
 
 
-def _technical_summary(rsi, k, d, macd_hist) -> str:
-    """Compact quantified technical readout for the 原因說明 column."""
+def _technical_summary(rsi, k, d, macd_hist, info: dict) -> str:
+    """Compact quantified technical readout for the 原因說明 column:
+    KD / MACD / RSI plus dividend per share & dividend yield."""
     parts = []
-    if pd.notna(rsi):
-        parts.append(f"RSI{rsi:.0f}")
     if pd.notna(k) and pd.notna(d):
         parts.append("KD" + ("金叉" if k >= d else "死叉"))
     if pd.notna(macd_hist):
         parts.append("MACD" + ("翻紅" if macd_hist >= 0 else "翻黑"))
+    if pd.notna(rsi):
+        parts.append(f"RSI{rsi:.0f}")
+    rate = info.get("dividendRate")
+    if rate:
+        parts.append(f"股息{rate:.2f}")
+    dy = info.get("dividendYield") or 0.0
+    if dy > 0.5:  # yfinance sometimes returns this as a percent, not a fraction
+        dy /= 100.0
+    if dy:
+        parts.append(f"殖利率{dy * 100:.2f}%")
     return "、".join(parts)
 
 
@@ -221,7 +230,7 @@ def build_recommendation_table(
             # 籌碼 raw
             "_chip": chip,
             # 原因說明 enrichments (display-only strings)
-            "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist),
+            "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist, info),
             "基本面摘要": _fundamental_summary(info),
         }
 
