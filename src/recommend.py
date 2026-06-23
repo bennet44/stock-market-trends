@@ -100,8 +100,17 @@ def _zscore(series: pd.Series) -> pd.Series:
 
 
 def _news_sentiment(ticker: str, company_name: str | None) -> tuple[float, str]:
-    """Return (sentiment score, short headline summary) for the recent news."""
-    items = news_mod.get_recent_news(ticker, company_name)
+    """Return (sentiment score, short headline summary) for the recent news.
+
+    US tickers are covered far better by English-language financial media
+    than by zh-TW Google News (which rarely indexes small/mid-cap US
+    names), so US tickers search English first and only fall back to the
+    zh-TW search if that comes back empty.
+    """
+    is_us = not ticker.endswith((".TW", ".TWO"))
+    items = news_mod.get_recent_news_en(ticker, company_name) if is_us else []
+    if not items:
+        items = news_mod.get_recent_news(ticker, company_name)
     score = news_mod.news_sentiment_score(items)
     if not items:
         return score, "近4日無相關新聞"

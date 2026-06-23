@@ -412,14 +412,15 @@ with tab_overview:
         company_name = (
             fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
         )
-    news_items = news.get_recent_news(primary, company_name)
-    # Extra, market-appropriate sources layered on top of Google News: SEC
-    # EDGAR filings + Reuters for US tickers, TWSE exchange news + MOPS
-    # material-info disclosures (best-effort, see news.get_mops_news) for
-    # TW tickers. Display-only — not fed into the recommendation scoring.
+    # US tickers: zh-TW Google News rarely indexes small/mid-cap US names
+    # (e.g. OKLO), so lead with a broad English-language search instead and
+    # only fall back to the zh-TW search if that's empty. TW tickers keep
+    # the zh-TW search as primary.
     if is_tw:
+        news_items = news.get_recent_news(primary, company_name)
         extra_news = news.get_twse_news(primary, company_name) + news.get_mops_news(primary, company_name)
     else:
+        news_items = news.get_recent_news_en(primary, company_name) or news.get_recent_news(primary, company_name)
         extra_news = news.get_reuters_news(primary, company_name) + news.get_sec_filings(primary)
     news_items = sorted(news_items + extra_news, key=lambda n: n["published"], reverse=True)
     if not news_items:

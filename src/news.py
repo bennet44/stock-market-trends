@@ -35,6 +35,14 @@ _NEGATIVE_WORDS = [
     "下跌", "大跌", "看壞", "降評", "不如預期", "創新低", "賣出", "減持",
     "虧損", "衰退", "悲觀", "重挫", "跳水", "下修", "示警",
 ]
+_POSITIVE_WORDS_EN = [
+    "surge", "soar", "rally", "jump", "gain", "upgrade", "beat", "record high",
+    "buy rating", "outperform", "bullish", "profit", "growth", "raises",
+]
+_NEGATIVE_WORDS_EN = [
+    "plunge", "slump", "tumble", "drop", "fall", "downgrade", "miss", "record low",
+    "sell rating", "underperform", "bearish", "loss", "decline", "cuts", "lawsuit",
+]
 
 
 def _fetch_google_news(query: str, hl: str, gl: str, ceid: str, days: int) -> list[dict]:
@@ -82,6 +90,18 @@ def get_recent_news(ticker: str, company_name: str | None = None, days: int = 4)
     search_ticker = ticker.split(".")[0]
     query = f"{company_name} {search_ticker} 股票" if company_name else f"{search_ticker} 股票"
     return _fetch_google_news(query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant", days=days)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_recent_news_en(ticker: str, company_name: str | None = None, days: int = 4) -> list[dict]:
+    """Fetch recent English-language headlines for a (US) ticker from Google
+    News RSS — same shape/cache contract as get_recent_news, just hl/gl=US
+    and no site restriction (broader than get_reuters_news below).
+    """
+    search_ticker = ticker.split(".")[0]
+    base = f"{company_name} {search_ticker}" if company_name else search_ticker
+    query = f"{base} stock"
+    return _fetch_google_news(query, hl="en-US", gl="US", ceid="US:en", days=days)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -225,8 +245,11 @@ def news_sentiment_score(news_items: list[dict]) -> float:
     pos = neg = 0
     for n in news_items:
         title = n["title"]
+        title_lower = title.lower()
         pos += sum(title.count(w) for w in _POSITIVE_WORDS)
         neg += sum(title.count(w) for w in _NEGATIVE_WORDS)
+        pos += sum(title_lower.count(w) for w in _POSITIVE_WORDS_EN)
+        neg += sum(title_lower.count(w) for w in _NEGATIVE_WORDS_EN)
     total = pos + neg
     if total == 0:
         return 0.0
