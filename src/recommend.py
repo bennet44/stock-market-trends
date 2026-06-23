@@ -69,6 +69,9 @@ TECH_SUBWEIGHTS_BY_HORIZON = {
 # line, medium the 20-day 月線 (the "強勢股需在月線上" benchmark), long the 60-day.
 # (Being above SMA20 also feeds 技術面's SMA-alignment sub-signal.)
 _TREND_SMA_BY_HORIZON = {"short": 5, "medium": 20, "long": 60}
+# Flat penalty subtracted from 綜合評分 when 現價 is below the 20-day 月線
+# (regardless of horizon) — a strength gate that demotes below-month-line stocks.
+SMA20_PENALTY = 0.5
 
 _NEWS_FETCH_WORKERS = 12
 
@@ -180,6 +183,7 @@ def build_recommendation_table(
         last_close = close.iloc[-1]
         rets = risk_mod.daily_returns(close)
         sma_trend = ta.sma(close, _TREND_SMA_BY_HORIZON.get(horizon, 20)).iloc[-1]
+        sma20_val = ta.sma(close, 20).iloc[-1]  # 月線, for the strength penalty
         info = dl.get_company_info(t)
         pe = info.get("forwardPE") or info.get("trailingPE")
         company_names[t] = info.get("shortName")
@@ -234,6 +238,8 @@ def build_recommendation_table(
             "_t_pat": pattern,
             # 籌碼 raw
             "_chip": chip,
+            # 1.0 when 現價 is below the 20-day 月線 → 綜合評分 penalty.
+            "_below_sma20": 1.0 if (pd.notna(sma20_val) and last_close < sma20_val) else 0.0,
             # 原因說明 enrichments (display-only strings)
             "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist, info),
             "基本面摘要": _fundamental_summary(info),
@@ -276,7 +282,8 @@ def build_recommendation_table(
         contribution = _zscore(table[factor].astype(float)) * weight
         table[_CONTRIB_PREFIX + factor] = contribution
         score = score + contribution
-    table["綜合評分"] = score
+    # Strength gate: stocks trading below the 20-day 月線 are penalized.
+    table["綜合評分"] = score - SMA20_PENALTY * table["_below_sma20"].astype(float)
     return table.sort_values("綜合評分", ascending=False)
 
 
@@ -482,7 +489,13 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
             detail = str(detail).strip()
             tag = nums[i] if i < len(nums) else f"{i + 1}."
             parts.append(f"{tag}{label}（{detail}）" if detail else f"{tag}{label}")
-        reasons.append(" ".join(parts))
-    out = df.drop(columns=contrib_cols + [c for c in summary_col.values() if c in df.columns])
+        text = " ".join(parts)
+        if "_below_sma20" in df.columns and pd.notna(row.get("_below_sma20")) and row.get("_below_sma20") >= 1:
+            text += "（未站上月線SMA20，已扣分）"
+        reasons.append(text)
+    drop_extra = [c for c in summary_col.values() if c in df.columns]
+    if "_below_sma20" in df.columns:
+        drop_extra.append("_below_sma20")
+    out = df.drop(columns=contrib_cols + drop_extra)
     out["原因說明"] = reasons
     return out
