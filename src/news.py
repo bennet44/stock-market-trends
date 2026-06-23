@@ -226,6 +226,28 @@ def get_sec_filings(ticker: str, days: int = 4) -> list[dict]:
     return items
 
 
+_TRANSLATE_URL = (
+    "https://translate.googleapis.com/translate_a/single"
+    "?client=gtx&sl=auto&tl=zh-TW&dt=t&q={text}"
+)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def translate_to_zh_tw(text: str) -> str:
+    """Best-effort machine translation of an English headline to Traditional
+    Chinese, via the unofficial (no-key) Google Translate endpoint. Returns
+    the original text unchanged on any failure."""
+    if not text:
+        return text
+    url = _TRANSLATE_URL.format(text=urllib.parse.quote(text))
+    try:
+        with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+        return "".join(seg[0] for seg in data[0] if seg[0])
+    except Exception:
+        return text
+
+
 def recent_news_date_label(days: int = 4) -> str:
     """Human-readable date range matching get_recent_news's window, e.g. '6/17-6/20'."""
     today = dt.datetime.now(dt.timezone.utc).date()

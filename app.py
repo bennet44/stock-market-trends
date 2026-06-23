@@ -428,7 +428,15 @@ with tab_overview:
     else:
         for n in news_items:
             published_str = n["published"].strftime("%Y-%m-%d %H:%M UTC")
-            st.markdown(f"- [{n['title']}]({n['link']})　_{n['source']}｜{published_str}_")
+            # US headlines come back in English; show a best-effort zh-TW
+            # translation alongside the original (machine translation, may
+            # be imperfect — original title links through for verification).
+            title = n["title"]
+            if not is_tw:
+                translated = news.translate_to_zh_tw(title)
+                if translated and translated != title:
+                    title = f"{translated}（{title}）"
+            st.markdown(f"- [{title}]({n['link']})　_{n['source']}｜{published_str}_")
 
 # ---------- Tab 2: Multi-stock comparison, correlation & risk stats ----------
 with tab_compare_risk:
