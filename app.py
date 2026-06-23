@@ -573,7 +573,7 @@ with tab_reco:
     _FACTOR_DISPLAY = {
         "期間報酬率": "期間報酬率",
         "技術面": "技術面(動能+布林+SMA+型態)",
-        "趨勢(價格/SMA50)": "價格趨勢",
+        "趨勢(價格/均線)": "價格趨勢",
         "Sharpe Ratio": "Sharpe",
         "估值(1/預估PE)": "估值",
         "基本面": "基本面",
@@ -635,12 +635,12 @@ with tab_reco:
             recommend.add_price_targets(sell_df, "sell", currency, hold_days,
                                         horizon=reco_horizon, aggressiveness=reco_aggr), "sell")
 
-        _PCT_COLS = ["期間報酬率", "趨勢(價格/SMA50)"]
+        _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)"]
         # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
         _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                        "RSI (14)", "綜合評分"]
         _PRICE_COLS = ["建議買入價", "建議賣出價"]
-        _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/SMA50)", "Sharpe Ratio",
+        _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
                       "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
                       "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明"]
 

@@ -26,7 +26,7 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "技術面": 0.20,
         "籌碼": 0.18,
         "新聞情緒": 0.15,
-        "趨勢(價格/SMA50)": 0.12,
+        "趨勢(價格/均線)": 0.12,
         "Sharpe Ratio": 0.07,
         "估值(1/預估PE)": 0.05,
         "基本面": 0.05,
@@ -36,7 +36,7 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "技術面": 0.13,
         "籌碼": 0.12,
         "新聞情緒": 0.12,
-        "趨勢(價格/SMA50)": 0.10,
+        "趨勢(價格/均線)": 0.10,
         "Sharpe Ratio": 0.13,
         "估值(1/預估PE)": 0.12,
         "基本面": 0.13,
@@ -46,7 +46,7 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "技術面": 0.06,
         "籌碼": 0.06,
         "新聞情緒": 0.06,
-        "趨勢(價格/SMA50)": 0.08,
+        "趨勢(價格/均線)": 0.08,
         "Sharpe Ratio": 0.22,
         "估值(1/預估PE)": 0.20,
         "基本面": 0.22,
@@ -65,12 +65,17 @@ TECH_SUBWEIGHTS_BY_HORIZON = {
     "long":   {"macd": 0.10, "kd": 0.05, "rsi": 0.05, "bb": 0.05, "sma": 0.50, "pat": 0.25},
 }
 
+# The 趨勢 factor's reference moving average, by horizon: short uses the 5-day
+# line, medium the 20-day 月線 (the "強勢股需在月線上" benchmark), long the 60-day.
+# (Being above SMA20 also feeds 技術面's SMA-alignment sub-signal.)
+_TREND_SMA_BY_HORIZON = {"short": 5, "medium": 20, "long": 60}
+
 _NEWS_FETCH_WORKERS = 12
 
 _FACTOR_LABELS = {
     "期間報酬率": "期間報酬率",
     "Sharpe Ratio": "風險調整後報酬(Sharpe)",
-    "趨勢(價格/SMA50)": "價格趨勢(相對SMA50)",
+    "趨勢(價格/均線)": "價格趨勢(短SMA5/中SMA20月線/長SMA60)",
     "估值(1/預估PE)": "估值水準",
     "新聞情緒": "新聞情緒",
     "基本面": "基本面",
@@ -174,7 +179,7 @@ def build_recommendation_table(
         high, low, volume = win["High"], win["Low"], win["Volume"]
         last_close = close.iloc[-1]
         rets = risk_mod.daily_returns(close)
-        sma50 = ta.sma(close, 50).iloc[-1]
+        sma_trend = ta.sma(close, _TREND_SMA_BY_HORIZON.get(horizon, 20)).iloc[-1]
         info = dl.get_company_info(t)
         pe = info.get("forwardPE") or info.get("trailingPE")
         company_names[t] = info.get("shortName")
@@ -212,7 +217,7 @@ def build_recommendation_table(
             "最新收盤價": last_close,
             "期間報酬率": last_close / close.iloc[0] - 1,
             "Sharpe Ratio": risk_mod.sharpe_ratio(rets, risk_free_rate),
-            "趨勢(價格/SMA50)": (last_close / sma50 - 1) if pd.notna(sma50) and sma50 else np.nan,
+            "趨勢(價格/均線)": (last_close / sma_trend - 1) if pd.notna(sma_trend) and sma_trend else np.nan,
             "估值(1/預估PE)": (1 / pe) if pe and pe > 0 else np.nan,
             "RSI (14)": rsi_last,
             # 基本面 sub-metrics (yfinance fundamentals)
