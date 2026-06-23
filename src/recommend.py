@@ -446,12 +446,16 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
     """
     # Factors that carry a detail string appended in parentheses in 原因說明.
     summary_col = {"技術面": "技術摘要", "新聞情緒": "新聞摘要", "基本面": "基本面摘要"}
+    # Pure performance/return metrics are not "reasons" — the 原因說明 should read
+    # as 基本面/技術面/籌碼面 analysis, so these are left out of it.
+    reason_exclude = {"期間報酬率", "Sharpe Ratio"}
     contrib_cols = [c for c in df.columns if c.startswith(_CONTRIB_PREFIX)]
     reasons = []
     for _, row in df.iterrows():
         contribs = {
             c[len(_CONTRIB_PREFIX):]: row[c]  # keep the raw factor key
-            for c in contrib_cols if pd.notnull(row[c])
+            for c in contrib_cols
+            if pd.notnull(row[c]) and c[len(_CONTRIB_PREFIX):] not in reason_exclude
         }
         if not contribs:
             reasons.append("資料不足")
