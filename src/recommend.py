@@ -456,16 +456,24 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
         if not contribs:
             reasons.append("資料不足")
             continue
-        ranked = sorted(contribs.items(), key=lambda kv: kv[1], reverse=(side == "buy"))
+        # List every factor that contributes in the recommended direction
+        # (positive for buy / negative for sell), ranked most→least important,
+        # numbered so the priority order is explicit. Falls back to the two
+        # strongest factors if none point the "right" way.
+        favorable = [(k, v) for k, v in contribs.items() if (v > 0 if side == "buy" else v < 0)]
+        ranked = sorted(favorable or contribs.items(), key=lambda kv: kv[1], reverse=(side == "buy"))
+        if not favorable:
+            ranked = ranked[:2]
+        nums = "①②③④⑤⑥⑦⑧⑨⑩"
         parts = []
-        for key, _ in ranked[:2]:
+        for i, (key, _) in enumerate(ranked):
             label = _FACTOR_LABELS.get(key, key)
             col = summary_col.get(key)
             detail = row[col] if (col and col in df.columns and pd.notnull(row.get(col))) else ""
             detail = str(detail).strip()
-            parts.append(f"{label}（{detail}）" if detail else label)
-        verb = "領先同組" if side == "buy" else "落後同組"
-        reasons.append(f"{'、'.join(parts)}{verb}")
+            tag = nums[i] if i < len(nums) else f"{i + 1}."
+            parts.append(f"{tag}{label}（{detail}）" if detail else f"{tag}{label}")
+        reasons.append(" ".join(parts))
     out = df.drop(columns=contrib_cols + [c for c in summary_col.values() if c in df.columns])
     out["原因說明"] = reasons
     return out
