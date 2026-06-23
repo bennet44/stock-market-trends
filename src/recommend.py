@@ -91,9 +91,42 @@ def _zscore(series: pd.Series) -> pd.Series:
     return ((series - series.mean()) / std).fillna(0.0)
 
 
-def _news_sentiment(ticker: str, company_name: str | None) -> float:
+def _news_sentiment(ticker: str, company_name: str | None) -> tuple[float, str]:
+    """Return (sentiment score, short headline summary) for the recent news."""
     items = news_mod.get_recent_news(ticker, company_name)
-    return news_mod.news_sentiment_score(items)
+    score = news_mod.news_sentiment_score(items)
+    if not items:
+        return score, "近4日無相關新聞"
+    head = (items[0].get("title") or "").strip().replace("\n", " ")
+    if len(head) > 22:
+        head = head[:22] + "…"
+    summary = head if len(items) == 1 else f"{head}（共{len(items)}則）"
+    return score, summary
+
+
+def _technical_summary(rsi, k, d, macd_hist) -> str:
+    """Compact quantified technical readout for the 原因說明 column."""
+    parts = []
+    if pd.notna(rsi):
+        parts.append(f"RSI{rsi:.0f}")
+    if pd.notna(k) and pd.notna(d):
+        parts.append("KD" + ("金叉" if k >= d else "死叉"))
+    if pd.notna(macd_hist):
+        parts.append("MACD" + ("翻紅" if macd_hist >= 0 else "翻黑"))
+    return "、".join(parts)
+
+
+def _fundamental_summary(info: dict) -> str:
+    """Compact key-figure readout (營收成長/ROE/淨利率) for the 原因說明 column."""
+    parts = []
+    rev, roe, margin = info.get("revenueGrowth"), info.get("returnOnEquity"), info.get("profitMargins")
+    if rev is not None:
+        parts.append(f"營收成長{rev * 100:.0f}%")
+    if roe is not None:
+        parts.append(f"ROE{roe * 100:.0f}%")
+    if margin is not None:
+        parts.append(f"淨利率{margin * 100:.0f}%")
+    return "、".join(parts)
 
 
 def build_recommendation_table(
@@ -187,6 +220,9 @@ def build_recommendation_table(
             "_t_pat": pattern,
             # 籌碼 raw
             "_chip": chip,
+            # 原因說明 enrichments (display-only strings)
+            "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist),
+            "基本面摘要": _fundamental_summary(info),
         }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=_NEWS_FETCH_WORKERS) as pool:
@@ -196,9 +232,9 @@ def build_recommendation_table(
         for future in concurrent.futures.as_completed(futures):
             t = futures[future]
             try:
-                rows[t]["新聞情緒"] = future.result()
+                rows[t]["新聞情緒"], rows[t]["新聞摘要"] = future.result()
             except Exception:
-                rows[t]["新聞情緒"] = 0.0
+                rows[t]["新聞情緒"], rows[t]["新聞摘要"] = 0.0, ""
 
     table = pd.DataFrame(rows).T
     if table.empty:
@@ -399,20 +435,28 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
     Reads the hidden per-factor score contributions stashed by
     build_recommendation_table and drops them once the explanation is built.
     """
+    # Factors that carry a detail string appended in parentheses in 原因說明.
+    summary_col = {"技術面": "技術摘要", "新聞情緒": "新聞摘要", "基本面": "基本面摘要"}
     contrib_cols = [c for c in df.columns if c.startswith(_CONTRIB_PREFIX)]
     reasons = []
     for _, row in df.iterrows():
         contribs = {
-            _FACTOR_LABELS[c[len(_CONTRIB_PREFIX):]]: row[c]
+            c[len(_CONTRIB_PREFIX):]: row[c]  # keep the raw factor key
             for c in contrib_cols if pd.notnull(row[c])
         }
         if not contribs:
             reasons.append("資料不足")
             continue
         ranked = sorted(contribs.items(), key=lambda kv: kv[1], reverse=(side == "buy"))
-        top_labels = [label for label, _ in ranked[:2]]
+        parts = []
+        for key, _ in ranked[:2]:
+            label = _FACTOR_LABELS.get(key, key)
+            col = summary_col.get(key)
+            detail = row[col] if (col and col in df.columns and pd.notnull(row.get(col))) else ""
+            detail = str(detail).strip()
+            parts.append(f"{label}（{detail}）" if detail else label)
         verb = "領先同組" if side == "buy" else "落後同組"
-        reasons.append(f"{'、'.join(top_labels)}{verb}")
-    out = df.drop(columns=contrib_cols)
+        reasons.append(f"{'、'.join(parts)}{verb}")
+    out = df.drop(columns=contrib_cols + [c for c in summary_col.values() if c in df.columns])
     out["原因說明"] = reasons
     return out
