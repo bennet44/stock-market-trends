@@ -385,7 +385,7 @@ with tab_overview:
                 st.metric("建議賣出價（目標停利）", "資料不足")
 
     st.divider()
-    st.markdown(f"### {primary_label} 基本面財務")
+    st.markdown(f"### {primary_label} 基本財務面與技術分析簡述")
     fdf = dl.get_fundamentals_table([primary])
     if fdf.empty:
         st.warning("無法取得基本面資料。")
@@ -399,6 +399,16 @@ with tab_overview:
                 display[pct_col] = display[pct_col].apply(
                     lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
         st.dataframe(display, use_container_width=True)
+
+    if not df.empty:
+        st.markdown("##### 技術分析")
+        tech_df, tech_conclusion = recommend.technical_analysis_brief(
+            close, df["High"], df["Low"], recommend.horizon_for_hold_days(hold_days))
+        if tech_df.empty:
+            st.info("資料不足，無法計算技術指標。")
+        else:
+            st.dataframe(tech_df, use_container_width=True, hide_index=True)
+            st.caption(f"建議說明：{tech_conclusion}")
 
     st.divider()
     news_date_label = news.recent_news_date_label()

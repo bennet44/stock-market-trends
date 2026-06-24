@@ -368,6 +368,71 @@ def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: s
     return sum(subw[k] * v for k, v in sigs.items()) / wsum
 
 
+def technical_analysis_brief(close: pd.Series, high: pd.Series, low: pd.Series,
+                              horizon: str = "medium") -> tuple[pd.DataFrame, str]:
+    """Per-indicator technical readout for Page 1's "技術分析" table: each row's
+    現況/狀態/說明, plus a one-line 結論建議 derived from the same bias used to
+    nudge price targets (technical_bias) — so the table's conclusion always
+    agrees with the price-target adjustment shown above it.
+    """
+    rows = []
+    last = close.iloc[-1] if len(close) else float("nan")
+
+    rsi = ta.rsi(close).iloc[-1] if len(close) >= 2 else float("nan")
+    if pd.notna(rsi):
+        status = "超買" if rsi >= 70 else ("超賣" if rsi <= 30 else "中性")
+        rows.append(("RSI (14)", f"{rsi:.1f}", status,
+                     "≥70視為超買、≤30視為超賣，中間區間視為中性動能。"))
+
+    macd_df = ta.macd(close) if len(close) >= 2 else None
+    if macd_df is not None and pd.notna(macd_df["hist"].iloc[-1]):
+        hist = macd_df["hist"].iloc[-1]
+        status = "翻紅（偏多）" if hist >= 0 else "翻黑（偏空）"
+        rows.append(("MACD", f"{hist:+.2f}", status, "柱狀體（DIF−訊號線）由負轉正視為偏多訊號，反之偏空。"))
+
+    kd_df = ta.kd(high, low, close) if len(close) >= 2 else None
+    if kd_df is not None and pd.notna(kd_df["k"].iloc[-1]) and pd.notna(kd_df["d"].iloc[-1]):
+        k, d = kd_df["k"].iloc[-1], kd_df["d"].iloc[-1]
+        cross = "金叉" if k >= d else "死叉"
+        zone = "超買區" if k >= 80 else ("超賣區" if k <= 20 else "中性區")
+        rows.append(("KD (9)", f"K{k:.0f} / D{d:.0f}", f"{cross}・{zone}",
+                     "K≥D為金叉偏多，K≤D為死叉偏空；K≥80超買、K≤20超賣。"))
+
+    bb = ta.bollinger_bands(close) if len(close) >= 2 else None
+    if bb is not None and pd.notna(bb["upper"].iloc[-1]) and bb["upper"].iloc[-1] != bb["lower"].iloc[-1]:
+        up, lo = bb["upper"].iloc[-1], bb["lower"].iloc[-1]
+        pct_b = (last - lo) / (up - lo)
+        status = "貼上軌（偏多）" if pct_b >= 0.8 else ("貼下軌（偏空）" if pct_b <= 0.2 else "區間中段")
+        rows.append(("布林通道 %B", f"{pct_b * 100:.0f}%", status,
+                     "現價在通道中的相對位置；越貼上軌動能越強，越貼下軌越弱。"))
+
+    s5, s10, s20 = ta.sma(close, 5).iloc[-1], ta.sma(close, 10).iloc[-1], ta.sma(close, 20).iloc[-1]
+    if pd.notna(s5) and pd.notna(s10) and pd.notna(s20):
+        if s5 > s10 > s20:
+            status = "多頭排列"
+        elif s5 < s10 < s20:
+            status = "空頭排列"
+        else:
+            status = "糾結整理"
+        rows.append(("均線排列 (5/10/20)", f"{s5:.1f} / {s10:.1f} / {s20:.1f}", status,
+                     "短中長均線依大小排序：多頭排列＝5>10>20，空頭排列＝5<10<20。"))
+
+    df = pd.DataFrame(rows, columns=["指標", "現況數值", "狀態", "說明"])
+
+    bias = technical_bias(close, high, low, horizon)
+    if bias >= 0.2:
+        verdict = "技術面偏多"
+    elif bias <= -0.2:
+        verdict = "技術面偏空"
+    else:
+        verdict = "技術面中性"
+    conclusion = (
+        f"{verdict}（綜合技術偏多偏空指數 {bias:+.2f}，範圍−1~+1）。"
+        "本指數已用於上方建議買入/賣出價的微調，方向一致。"
+    )
+    return df, conclusion
+
+
 def forward_touch_rate(close, extreme, n_days: int, threshold: float, direction: str):
     """Path-based "touch" probability over a forward window.
 
