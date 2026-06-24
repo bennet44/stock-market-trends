@@ -627,10 +627,11 @@ with tab_reco:
         f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序\n"
         + (
-            f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
+            f"- **短期進場濾網**：持有 {hold_display}（屬「短期」≤10 交易日）時，買入清單採朱家泓式突破訊號"
             "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
-            "（回測 2026/02~06 美股，1天持有勝率由約54%提升至60%）\n"
-            if hold_days <= 5 else ""
+            "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
+            "6~10 天區間沿用同一濾網，但尚未個別回測驗證）\n"
+            if recommend.horizon_for_hold_days(hold_days) == "short" else ""
         )
         + "\n"
         f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
@@ -652,10 +653,12 @@ with tab_reco:
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認統計期間。")
     else:
-        # Short holds (≤5 交易日): gate buy picks to朱家泓-style breakout
-        # triggers (現價>上升MA20 且 收盤突破MA5+前日高點), not just highest score —
-        # backtested over 2026-02~06 美股, lifts 1天 win rate ~54%→60%.
-        _zhu_gate = "_zhu_signal" if hold_days <= 5 else None
+        # Short horizon (horizon_for_hold_days == "short", ≤10 交易日): gate buy
+        # picks to 朱家泓-style breakout triggers (現價>上升MA20 且 收盤突破MA5+前日
+        # 高點), not just highest score. Backtested at 1/3/5 天 (2026-02~06 美股,
+        # lifts win rate ~54%→60% at 1天); 6~10 天 share the same horizon bucket
+        # but weren't individually backtested.
+        _zhu_gate = "_zhu_signal" if recommend.horizon_for_hold_days(hold_days) == "short" else None
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n, require_signal_col=_zhu_gate)
         buy_df = recommend.add_reason(
             recommend.add_price_targets(buy_df, "buy", currency, hold_days,
