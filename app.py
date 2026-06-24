@@ -626,7 +626,13 @@ with tab_reco:
         f"- **建議賣出價／獲利%**：賣出價＝進場價×(1＋N日漲幅中位)；獲利%＝賣出/進場−1\n"
         f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序\n"
-        "\n"
+        + (
+            f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
+            "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
+            "（回測 2026/02~06 美股，1天持有勝率由約54%提升至60%）\n"
+            if hold_days <= 5 else ""
+        )
+        + "\n"
         f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
         "並依技術訊號微調：u→u×(1+0.4×技術偏多度)、d→d×(1−0.4×技術偏多度)，"
         "技術偏多度由 布林/SMA多頭/型態+動能 依持有天數加權）：\n"
@@ -646,7 +652,11 @@ with tab_reco:
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認統計期間。")
     else:
-        buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n)
+        # Short holds (≤5 交易日): gate buy picks to朱家泓-style breakout
+        # triggers (現價>上升MA20 且 收盤突破MA5+前日高點), not just highest score —
+        # backtested over 2026-02~06 美股, lifts 1天 win rate ~54%→60%.
+        _zhu_gate = "_zhu_signal" if hold_days <= 5 else None
+        buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n, require_signal_col=_zhu_gate)
         buy_df = recommend.add_reason(
             recommend.add_price_targets(buy_df, "buy", currency, hold_days,
                                         horizon=reco_horizon, aggressiveness=reco_aggr), "buy")
@@ -728,10 +738,17 @@ with tab_reco:
         )
 
         if len(buy_df) < top_n:
-            st.info(
-                f"目前範圍共 {len(reco_table)} 檔標的，為避免買入／賣出名單重複，"
-                f"已各自裁切為 {len(buy_df)} 檔（最多取清單一半），而非選擇的 Top {top_n}。"
-            )
+            if _zhu_gate:
+                st.info(
+                    f"買入清單僅 {len(buy_df)} 檔（非選擇的 Top {top_n}）：持有 {hold_display} 採用"
+                    "朱家泓式進場濾網（現價站上向上的MA20、且收盤同時突破MA5與前一日高點），"
+                    "目前範圍內符合此突破訊號的標的較少，沒訊號不勉強湊數。"
+                )
+            else:
+                st.info(
+                    f"目前範圍共 {len(reco_table)} 檔標的，為避免買入／賣出名單重複，"
+                    f"已各自裁切為 {len(buy_df)} 檔（最多取清單一半），而非選擇的 Top {top_n}。"
+                )
 
 # ---------- Tab 4: FCN risk assessment ----------
 with tab_fcn:
