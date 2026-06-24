@@ -106,9 +106,14 @@ RECO_PERIOD_OPTIONS = {
 _HORIZON_LABEL = {"short": "短期", "medium": "中期", "long": "長期"}
 
 # Holding period (trading days) for the 買賣建議 tab's 預測準確機率 column and
-# target prices. A preset dropdown plus a 自訂 (free-fill) option.
+# target prices. A preset dropdown plus a 自訂 (free-fill) option. The short
+# end is consolidated into day-count buckets (1~5天/6~10天/11~15天) — each
+# bucket runs the same formula at its upper-bound day count, since picking
+# 1天 vs 3天 vs 5天 individually didn't change which formula applied anyway
+# (朱家泓突破濾網 only ever distinguished ≤5 天 vs not). Past 15 天 the
+# original calendar-period labels are kept as-is (1個月/3個月/...).
 RECO_HOLD_OPTIONS = {
-    "1天": 1, "3天": 3, "5天": 5, "1週": 5, "3週": 15,
+    "1~5天": 5, "6~10天": 10, "11~15天": 15,
     "1個月": 21, "3個月": 63, "6個月": 126, "1年": 252, "3年": 756, "5年": 1260,
 }
 _HOLD_CUSTOM_LABEL = "自訂天數…"
@@ -318,7 +323,7 @@ with tab_overview:
             if st.session_state.get(_pt_hold_key) not in _pt_hold_opts:
                 st.session_state.pop(_pt_hold_key, None)
             hold_label1 = st.selectbox(
-                "持有天數(今日算起)", _pt_hold_opts, index=2, key=_pt_hold_key,
+                "持有天數(今日算起)", _pt_hold_opts, index=0, key=_pt_hold_key,
             )
             if hold_label1 == _HOLD_CUSTOM_LABEL:
                 hold_days = int(st.number_input(
@@ -562,7 +567,7 @@ with tab_reco:
         )
     with col_hold:
         hold_label = st.selectbox(
-            "持有天數", list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL], index=2,
+            "持有天數", list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL], index=0,
             key=f"hold_tab3_{'tw' if is_tw else 'us'}",
             help="預測準確機率以此持有天數（交易日）計算，建議進場／賣出價也用同一持有期。",
         )
@@ -627,11 +632,11 @@ with tab_reco:
         f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序\n"
         + (
-            f"- **短期進場濾網**：持有 {hold_display}（屬「短期」≤10 交易日）時，買入清單採朱家泓式突破訊號"
+            f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
             "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
             "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
-            "6~10 天區間沿用同一濾網，但尚未個別回測驗證）\n"
-            if recommend.horizon_for_hold_days(hold_days) == "short" else ""
+            "6~10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
+            if hold_days <= 5 else ""
         )
         + "\n"
         f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
@@ -653,12 +658,12 @@ with tab_reco:
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認統計期間。")
     else:
-        # Short horizon (horizon_for_hold_days == "short", ≤10 交易日): gate buy
-        # picks to 朱家泓-style breakout triggers (現價>上升MA20 且 收盤突破MA5+前日
-        # 高點), not just highest score. Backtested at 1/3/5 天 (2026-02~06 美股,
-        # lifts win rate ~54%→60% at 1天); 6~10 天 share the same horizon bucket
-        # but weren't individually backtested.
-        _zhu_gate = "_zhu_signal" if recommend.horizon_for_hold_days(hold_days) == "short" else None
+        # ≤5 交易日 only: gate buy picks to 朱家泓-style breakout triggers
+        # (現價>上升MA20 且 收盤突破MA5+前日高點), not just highest score.
+        # Backtested 2026-02~06 美股: lifts win rate at 1/3/5 天 (~54%→60% at
+        # 1天); a separate 6~10 天 backtest found no reliable improvement
+        # (sometimes worse), so the gate stops at 5 天.
+        _zhu_gate = "_zhu_signal" if hold_days <= 5 else None
         buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n, require_signal_col=_zhu_gate)
         buy_df = recommend.add_reason(
             recommend.add_price_targets(buy_df, "buy", currency, hold_days,
