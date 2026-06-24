@@ -188,6 +188,7 @@ def build_recommendation_table(
         # trim below), since short-hold lookbacks (1/3/5 天) are too few bars
         # for a meaningful MA5/MA20 read — see zhu_breakout_signal.
         zhu_signal = zhu_breakout_signal(df["Close"], df["High"])
+        zhu_vol_ok = zhu_volume_confirmed(df["Volume"])
         win = df.iloc[-(lookback_days + 1):] if lookback_days is not None else df
         if len(win) < 2:
             continue
@@ -256,6 +257,7 @@ def build_recommendation_table(
             # 朱家泓 short-term breakout trigger; only consulted for short-horizon
             # buy picks (see top_buy_sell's require_signal_col), not scored.
             "_zhu_signal": 1.0 if zhu_signal else 0.0,
+            "_zhu_vol_ok": 1.0 if zhu_vol_ok else 0.0,
             # 原因說明 enrichments (display-only strings)
             "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist, info),
             "基本面摘要": _fundamental_summary(info),
@@ -361,6 +363,23 @@ def zhu_breakout_signal(close: pd.Series, high: pd.Series) -> bool:
     uptrend = c > ma20 and ma20 > ma20_prev
     breakout = c > ma5 and c > prev_high
     return bool(uptrend and breakout)
+
+
+def zhu_volume_confirmed(volume: pd.Series, ratio: float = 1.2) -> bool:
+    """朱家泓 also requires 放量 (a volume pickup) to confirm a breakout is real
+    buying, not a thin no-volume false move. This isn't wired in as a hard
+    gate (untested whether it actually improves win rate) — it's used to
+    flag, in 備註, breakout picks whose volume didn't actually confirm, so
+    the trade can be entered with stop-loss already top of mind.
+    Returns False (not confirmed) on any insufficient-data case.
+    """
+    if len(volume) < 6:
+        return False
+    last_vol = volume.iloc[-1]
+    avg_vol = volume.iloc[-6:-1].mean()
+    if pd.isna(last_vol) or pd.isna(avg_vol) or not avg_vol:
+        return False
+    return bool(last_vol >= ratio * avg_vol)
 
 
 def horizon_for_hold_days(hold_days: int) -> str:
@@ -609,9 +628,27 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
         if "_below_sma20" in df.columns and pd.notna(row.get("_below_sma20")) and row.get("_below_sma20") >= 1:
             text += "（未站上月線SMA20，已扣分）"
         reasons.append(text)
+
+    # 備註: this pick is a 朱家泓 short-horizon breakout (passed the hard
+    # entry gate in top_buy_sell) but lacked the 放量 confirmation he also
+    # requires — flag it so the trade is entered with stop-loss already in
+    # mind, since an unconfirmed breakout is more likely to be a fake-out.
+    notes = []
+    if side == "buy" and "_zhu_signal" in df.columns and "_zhu_vol_ok" in df.columns:
+        for _, row in df.iterrows():
+            if row.get("_zhu_signal", 0) >= 1 and row.get("_zhu_vol_ok", 0) < 1:
+                notes.append("⚠️ 突破未放量確認，留意假突破，進場前先想好停損點")
+            else:
+                notes.append("")
+    else:
+        notes = [""] * len(df)
+
     drop_extra = [c for c in summary_col.values() if c in df.columns]
-    if "_below_sma20" in df.columns:
-        drop_extra.append("_below_sma20")
+    for hidden_col in ("_below_sma20", "_zhu_signal", "_zhu_vol_ok"):
+        if hidden_col in df.columns:
+            drop_extra.append(hidden_col)
     out = df.drop(columns=contrib_cols + drop_extra)
     out["原因說明"] = reasons
+    if any(notes):
+        out["備註"] = notes
     return out

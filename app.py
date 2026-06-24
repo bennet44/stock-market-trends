@@ -671,7 +671,7 @@ with tab_reco:
         _PRICE_COLS = ["建議買入價", "建議賣出價"]
         _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
                       "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
-                      "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明"]
+                      "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
 
         def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
             fmt = df.copy()
@@ -710,6 +710,8 @@ with tab_reco:
         buy_u["建議"] = "●"
         sell_u["建議"] = "●"
         merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])
+        if "備註" in merged.columns:
+            merged["備註"] = merged["備註"].fillna("")
         merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
         _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
         _future = merged["預測準確機率"].tolist() if "預測準確機率" in merged else [None] * len(merged)
