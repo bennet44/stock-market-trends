@@ -1,4 +1,7 @@
 """Stock universe helpers — S&P 500/US watchlist and Taiwan stock/ETF lists."""
+import re
+import urllib.request
+
 import pandas as pd
 import streamlit as st
 
@@ -81,6 +84,41 @@ _TW_ETF_CODES = [
 _TW_STOCK_TICKERS = [f"{c}.TW" for c in _TW_STOCK_CODES]
 _TW_ETF_TICKERS = [f"{c}.TW" for c in _TW_ETF_CODES]
 
+# Full ISIN-by-security-type listing — strMode=2 is the only mode that
+# includes newly issued actively-managed ETFs (e.g. 00997A); strMode=4
+# (which looks like the dedicated "ETF" mode) turned out to be stale and
+# missing them, so this scrapes the comprehensive listing and slices out
+# the "ETF" section instead.
+_TWSE_ISIN_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+_TWSE_ISIN_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_twse_etf_tickers() -> list[str]:
+    """Live list of every TWSE-listed ETF, scraped from TWSE's full
+    securities-by-ISIN page. The curated _TW_ETF_TICKERS fallback above
+    predates most actively-managed ETFs (00xxxA-style codes) and isn't
+    maintained by hand, so this is what get_twse_tickers() actually uses;
+    the curated list only kicks in if this fetch/parse fails outright.
+    """
+    try:
+        req = urllib.request.Request(_TWSE_ISIN_URL, headers=_TWSE_ISIN_HEADERS)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            html = resp.read().decode("big5", errors="replace")
+        section_starts = {m.group(1).strip(): m.start() for m in re.finditer(r"<B>\s*([^<]+?)\s*<B>", html)}
+        etf_start, etn_start = section_starts.get("ETF"), section_starts.get("ETN")
+        if etf_start is None or etn_start is None or etn_start <= etf_start:
+            return _TW_ETF_TICKERS
+        section = html[etf_start:etn_start]
+        codes = re.findall(r"<td bgcolor=#FAFAD2>(\d{4,6}[A-Z]?)[^<]*</td><td bgcolor=#FAFAD2>TW", section)
+        tickers = sorted({f"{c}.TW" for c in codes})
+        # Sanity floor: TWSE has had 150+ listed ETFs for years, so a parse
+        # that comes back thin almost certainly means the page layout
+        # changed underneath this regex, not that ETFs were delisted.
+        return tickers if len(tickers) >= 100 else _TW_ETF_TICKERS
+    except Exception:
+        return _TW_ETF_TICKERS
+
 # Traditional-Chinese names for the curated codes above. Yahoo Finance's
 # "shortName" for TWSE tickers comes back in English (e.g. "Taiwan
 # Semiconductor Mfg"), so the curated lists carry their own Chinese names.
@@ -117,8 +155,10 @@ def get_tw_company_name(ticker: str) -> str | None:
 
 
 def get_twse_tickers() -> list[str]:
-    """Curated Taiwan universe: individual stocks + ETFs, both TWSE-listed."""
-    return sorted(set(_TW_STOCK_TICKERS) | set(_TW_ETF_TICKERS))
+    """Taiwan universe: curated individual stocks + the live-scraped list of
+    every TWSE-listed ETF (see get_twse_etf_tickers — falls back to a small
+    curated list if that fetch fails)."""
+    return sorted(set(_TW_STOCK_TICKERS) | set(get_twse_etf_tickers()))
 
 
 def normalize_tw_ticker(raw: str) -> str:
