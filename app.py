@@ -664,7 +664,7 @@ def _render_buy_sell_section(
         if is_tw:
             scope_desc = "「台股觀察清單（含 ETF 及個股）」"
         else:
-            scope_desc = "「美股近期成交量前 30 大」與「S&P 500 成分股」的聯集"
+            scope_desc = "「美股近期成交量前 30 大」「S&P 500 成分股」「Nasdaq-100 成分股」「道瓊 30 成分股」的聯集"
         st.caption(
             f"- **篩選範圍**：{scope_desc}\n"
             "- **評分方式**：上列九因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
@@ -695,7 +695,10 @@ def _render_buy_sell_section(
     if is_tw:
         reco_universe = universe.get_twse_tickers()
     else:
-        reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
+        reco_universe = sorted(
+            set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers())
+            | set(universe.get_nasdaq100_tickers()) | set(universe.get_dow_tickers())
+        )
 
     if dividend_screen:
         with st.spinner(f"正在計算 {len(reco_universe)} 檔標的的殖利率／填息率…"):

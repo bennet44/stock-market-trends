@@ -8,6 +8,8 @@ import streamlit as st
 from . import data_loader as dl
 
 _WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+_NASDAQ100_WIKI_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
+_DOW_WIKI_URL = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
 
 # Small, definitely-correct fallback used only if the live Wikipedia fetch
 # fails (e.g. no network access or the page structure changed), so "ALL"
@@ -50,6 +52,53 @@ def get_sp500_tickers() -> list[str]:
     except Exception:
         pass
     return _FALLBACK_TICKERS
+
+
+# Small fallbacks for the Nasdaq-100/Dow fetchers below, same role as
+# _FALLBACK_TICKERS — only used if the live Wikipedia fetch fails.
+_NASDAQ100_FALLBACK = [
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AVGO", "COST",
+    "NFLX", "ADBE", "PEP", "CSCO", "AMD", "INTC", "QCOM", "TXN", "INTU", "AMGN",
+]
+_DOW_FALLBACK = [
+    "AAPL", "MSFT", "AMZN", "JPM", "JNJ", "V", "PG", "HD", "UNH", "MRK",
+    "CVX", "KO", "MCD", "CAT", "DIS", "IBM", "GS", "CSCO", "NKE", "WMT",
+]
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_nasdaq100_tickers() -> list[str]:
+    """Live Nasdaq-100 index constituent list scraped from Wikipedia, cached
+    for a day. Falls back to a short well-known subset if the fetch fails."""
+    try:
+        tables = pd.read_html(_NASDAQ100_WIKI_URL)
+        for table in tables:
+            cols = [str(c) for c in table.columns]
+            ticker_col = next((c for c in cols if c.lower() in ("ticker", "symbol")), None)
+            if ticker_col and len(table) >= 90:
+                symbols = table[ticker_col].astype(str).str.strip().str.replace(".", "-", regex=False)
+                return sorted(set(symbols.tolist()))
+    except Exception:
+        pass
+    return _NASDAQ100_FALLBACK
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_dow_tickers() -> list[str]:
+    """Live Dow Jones Industrial Average constituent list scraped from
+    Wikipedia, cached for a day. Falls back to a short well-known subset if
+    the fetch fails."""
+    try:
+        tables = pd.read_html(_DOW_WIKI_URL)
+        for table in tables:
+            cols = [str(c) for c in table.columns]
+            ticker_col = next((c for c in cols if c.lower() in ("symbol", "ticker")), None)
+            if ticker_col and 25 <= len(table) <= 35:
+                symbols = table[ticker_col].astype(str).str.strip().str.replace(".", "-", regex=False)
+                return sorted(set(symbols.tolist()))
+    except Exception:
+        pass
+    return _DOW_FALLBACK
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
