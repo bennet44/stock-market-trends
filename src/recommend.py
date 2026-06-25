@@ -316,9 +316,15 @@ def top_buy_sell(
     require_signal_col, when given (e.g. "_zhu_signal"), gates the *buy* side
     to only rows where that column is truthy — a hard entry-trigger filter on
     top of the composite ranking, rather than a score contributor. Used for
-    short-horizon buy picks (see zhu_breakout_signal). The sell side is
-    unaffected; if nothing qualifies, buy comes back empty rather than
-    falling back to the unfiltered ranking.
+    short-horizon buy picks (see zhu_breakout_signal). If nothing qualifies,
+    buy comes back empty rather than falling back to the unfiltered ranking.
+
+    The signal is independent of 綜合評分 rank, so a low-scoring row can still
+    qualify and get selected for buy — sell is then drawn from the remaining
+    rows (excluding whatever got picked for buy) so the two never share a
+    ticker; concat'ing them downstream into one display table needs a unique
+    index, and a duplicate ticker there raises "Styler.apply ... not
+    compatible with non-unique index" instead of a usable error message.
     """
     if table.empty:
         return table, table
@@ -332,7 +338,8 @@ def top_buy_sell(
         buy = qualifying.head(n_eff)
     else:
         buy = sorted_desc.head(n_eff)
-    sell = sorted_desc.tail(n_eff).iloc[::-1]
+    sell_pool = sorted_desc[~sorted_desc.index.isin(buy.index)]
+    sell = sell_pool.tail(n_eff).iloc[::-1]
     return buy, sell
 
 
