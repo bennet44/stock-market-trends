@@ -573,7 +573,7 @@ def _render_buy_sell_section(
     period_options: dict, default_period_label: str,
     hold_options: dict, default_hold_label: str,
     allow_zhu_gate: bool, header: str, show_formula_caption: bool = True,
-    weight_table: dict | None = None,
+    weight_table: dict | None = None, dividend_screen: bool = False,
 ) -> None:
     """Shared body for 買賣建議 and 存股區: both scan the same universe with
     the same 9-factor composite formula, but offer a different subset of
@@ -695,6 +695,21 @@ def _render_buy_sell_section(
         reco_universe = universe.get_twse_tickers()
     else:
         reco_universe = sorted(set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers()))
+
+    if dividend_screen:
+        with st.spinner(f"正在計算 {len(reco_universe)} 檔標的的殖利率／填息率…"):
+            screen_df = recommend.dividend_fill_screen(reco_universe)
+        if screen_df.empty:
+            st.warning("目前範圍內沒有足夠的配息資料可供篩選，已停用此篩選、改用完整候選範圍。")
+        else:
+            with st.expander(f"配息殖利率前50高 ∩ 填息率前30高：{len(screen_df)} 檔標的（點開查看）"):
+                disp = screen_df.copy()
+                disp["殖利率"] = (disp["殖利率"] * 100).map(lambda v: f"{v:.2f}%")
+                disp["填息率"] = (disp["填息率"] * 100).map(lambda v: f"{v:.0f}%")
+                disp.index = [_display_name(t) for t in disp["代號"]]
+                st.dataframe(disp.drop(columns="代號"), use_container_width=True)
+            reco_universe = screen_df["代號"].tolist()
+
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
         reco_table = recommend.build_recommendation_table(
             reco_universe, period, DEFAULT_RISK_FREE_RATE,
@@ -823,12 +838,19 @@ with tab_stock_hold:
         "「統計期間」與「持有天數」也只保留中期／長期選項（不含短線交易用的 1~15 天區間），"
         "定位為長期存股／逢低布局參考，而非短線進出。"
     )
+    _dividend_screen_on = st.checkbox(
+        "套用「今年配息殖利率前50高 ∩ 填息率前30高」篩選",
+        key=f"dividend_screen_{'tw' if is_tw else 'us'}",
+        help="先把候選範圍縮小到近12個月殖利率前50高、且其中填息率（除息缺口60個交易日內回補的比例）前30高的"
+             "標的，再用下方九因子公式排序；不是另一套公式，是排序前的候選範圍篩選。",
+    )
     _render_buy_sell_section(
         is_tw, currency, "tab_hold",
         _HOLDING_PERIOD_OPTIONS, "1年",
         _HOLDING_HOLD_OPTIONS, "1年",
         allow_zhu_gate=False, header="長期存股觀點：建議買入 / 賣出",
         show_formula_caption=False, weight_table=recommend.FACTOR_WEIGHTS_HOLDING,
+        dividend_screen=_dividend_screen_on,
     )
 
 # ---------- Tab 5: FCN risk assessment ----------

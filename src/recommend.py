@@ -220,6 +220,71 @@ def _dividend_stability(dividends: pd.Series) -> float:
     return 0.5 * continuity_score + 0.5 * consistency_score
 
 
+def _dividend_yield_and_fill_rate(ticker: str) -> tuple[float | None, float | None]:
+    """Trailing-12-month dividend yield (TTM dividends / current price) and
+    填息率 for `ticker`: of the ex-dividend events in that trailing year, the
+    fraction whose price gap had filled — closed back at/above the
+    pre-ex-dividend close — within 60 trading days (or by today, if sooner).
+    Returns (None, None) if there's no usable price/dividend history.
+    """
+    full = dl.get_price_history(ticker, period="2y")
+    if full.empty:
+        return None, None
+    price_now = full["Close"].iloc[-1]
+    divs = dl.get_dividend_history(ticker)
+    if divs.empty:
+        return None, None
+    full_idx = full.index.tz_localize(None) if full.index.tz is not None else full.index
+    div_idx = divs.index.tz_localize(None) if divs.index.tz is not None else divs.index
+    now = full_idx[-1]
+    window_start = now - pd.Timedelta(days=365)
+    ttm = divs[(div_idx > window_start) & (div_idx <= now)]
+    if ttm.empty:
+        return None, None
+    div_yield = float(ttm.sum()) / float(price_now) if price_now else None
+
+    filled_flags = []
+    for ex_date in ttm.index:
+        ex_naive = ex_date.tz_localize(None) if getattr(ex_date, "tzinfo", None) is not None else ex_date
+        pre = full.loc[full_idx < ex_naive]
+        if pre.empty:
+            continue
+        pre_close = pre["Close"].iloc[-1]
+        post = full.loc[full_idx >= ex_naive].iloc[:60]
+        if post.empty:
+            continue
+        filled_flags.append(bool((post["Close"] >= pre_close).any()))
+    fill_rate = (sum(filled_flags) / len(filled_flags)) if filled_flags else None
+    return div_yield, fill_rate
+
+
+def dividend_yield_fill_table(tickers: list[str]) -> pd.DataFrame:
+    """殖利率/填息率 for every ticker that has usable trailing-12mo dividend
+    data — the raw table behind dividend_fill_screen, also useful to show
+    the user the full ranked list (not just who passed the cutoffs)."""
+    rows = []
+    for t in tickers:
+        dy, fr = _dividend_yield_and_fill_rate(t)
+        if dy is not None and fr is not None:
+            rows.append({"代號": t, "殖利率": dy, "填息率": fr})
+    return pd.DataFrame(rows)
+
+
+def dividend_fill_screen(tickers: list[str], top_yield: int = 50, top_fill: int = 30) -> pd.DataFrame:
+    """Stocks that are simultaneously top-`top_yield` by trailing-12mo
+    dividend yield AND, within those, top-`top_fill` by 填息率. This is a
+    pre-filter on the *candidate universe*, applied before the usual 9-factor
+    composite scoring — it does not itself rank or score anything; a ticker
+    passing this screen still needs to clear the composite-score cut to
+    appear in the 買賣建議/存股區 buy list.
+    """
+    df = dividend_yield_fill_table(tickers)
+    if df.empty:
+        return df
+    top_by_yield = df.sort_values("殖利率", ascending=False).head(top_yield)
+    return top_by_yield.sort_values("填息率", ascending=False).head(top_fill)
+
+
 def _fundamental_summary(info: dict) -> str:
     """Compact key-figure readout (營收成長/ROE/淨利率) for the 原因說明 column."""
     parts = []
