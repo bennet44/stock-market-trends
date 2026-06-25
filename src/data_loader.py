@@ -65,6 +65,18 @@ def get_company_info(ticker: str) -> dict:
     return info
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_etf_top_holdings(ticker: str) -> pd.DataFrame:
+    """Top holdings (Symbol, Name, Holding Percent) for an ETF ticker, from
+    yfinance's funds_data scraper. Returns an empty DataFrame for non-ETF
+    tickers or on any failure (e.g. yfinance has no funds data for it)."""
+    try:
+        holdings = yf.Ticker(ticker).funds_data.top_holdings
+    except Exception:
+        return pd.DataFrame()
+    return holdings if holdings is not None else pd.DataFrame()
+
+
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def get_twse_company_names() -> dict[str, str]:
     """{stock code: 公司簡稱 (Chinese short name)} for all TWSE-listed companies,

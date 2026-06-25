@@ -312,6 +312,19 @@ with tab_overview:
         st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
                    f"{(latest / prev - 1) * 100:.2f}%")
 
+        # ETF: list constituent holdings (capped — a holdings table with
+        # dozens/hundreds of rows, e.g. a bond ETF, would blow out the page
+        # layout, so it's only shown when it's a short, glanceable list).
+        _info_primary = dl.get_company_info(primary)
+        if _info_primary.get("quoteType") == "ETF":
+            holdings = dl.get_etf_top_holdings(primary)
+            if not holdings.empty and len(holdings) <= 15:
+                st.markdown("##### 成份股")
+                hdf = holdings.reset_index()
+                hdf.columns = ["代號", "名稱", "權重"]
+                hdf["權重"] = (hdf["權重"] * 100).map(lambda v: f"{v:.2f}%")
+                st.dataframe(hdf, use_container_width=True, hide_index=True)
+
         st.markdown("##### 建議買入／賣出價格參考")
         col_h1, col_a1 = st.columns(2)
         with col_h1:
