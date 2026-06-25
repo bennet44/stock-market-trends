@@ -30,6 +30,8 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "Sharpe Ratio": 0.07,
         "估值(1/預估PE)": 0.05,
         "基本面": 0.05,
+        # 配息穩定性不參與短線評分 — 股息對幾天內的進出毫無影響。
+        "配息穩定性": 0.00,
     },
     "medium": {
         "期間報酬率": 0.15,
@@ -39,7 +41,8 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "趨勢(價格/均線)": 0.10,
         "Sharpe Ratio": 0.13,
         "估值(1/預估PE)": 0.12,
-        "基本面": 0.13,
+        "基本面": 0.08,
+        "配息穩定性": 0.05,
     },
     "long": {
         "期間報酬率": 0.10,
@@ -49,7 +52,9 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "趨勢(價格/均線)": 0.08,
         "Sharpe Ratio": 0.22,
         "估值(1/預估PE)": 0.20,
-        "基本面": 0.22,
+        "基本面": 0.12,
+        # 長期/存股取向：配息連續且穩定的公司額外加分。
+        "配息穩定性": 0.10,
     },
 }
 # Default / backward-compatible weights when no horizon is specified.
@@ -84,6 +89,7 @@ _FACTOR_LABELS = {
     "基本面": "基本面",
     "技術面": "技術面",
     "籌碼": "籌碼面",
+    "配息穩定性": "配息穩定性(連續配發/年度金額穩定度)",
 }
 _CONTRIB_PREFIX = "_contrib_"
 
@@ -140,6 +146,47 @@ def _technical_summary(rsi, k, d, macd_hist, info: dict) -> str:
     if dy:
         parts.append(f"殖利率{dy * 100:.2f}%")
     return "、".join(parts)
+
+
+def _dividend_stability(dividends: pd.Series) -> float:
+    """配息穩定性 for 存股 ranking: blends payout continuity (consecutive
+    trailing years actually paid) with payout consistency (low year-to-year
+    variation in the amount) over the last 5 completed calendar years.
+
+    Returns NaN ("no signal") when there's no usable dividend history at
+    all — a non-payer growth stock isn't penalized, it just gets no credit
+    for this factor (neutral 0 after cross-sectional z-scoring), same
+    convention as the other sub-metrics here.
+    """
+    if dividends is None or dividends.empty:
+        return np.nan
+    idx = dividends.index
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    by_year = pd.Series(dividends.values, index=idx.year).groupby(level=0).sum()
+    current_year = pd.Timestamp.now().year
+    last5 = [float(by_year.get(y, 0.0)) for y in range(current_year - 5, current_year)]
+    if sum(last5) <= 0:
+        return np.nan
+    # Continuity: how many of the trailing years (counting backward from the
+    # most recent completed year) were actually paid, stopping at the first gap.
+    consecutive = 0
+    for amt in reversed(last5):
+        if amt > 0:
+            consecutive += 1
+        else:
+            break
+    continuity_score = consecutive / 5
+    # Consistency: low coefficient of variation among the years that did pay.
+    paid_years = [a for a in last5 if a > 0]
+    if len(paid_years) >= 2:
+        mean = sum(paid_years) / len(paid_years)
+        var = sum((a - mean) ** 2 for a in paid_years) / len(paid_years)
+        cv = (var ** 0.5) / mean if mean else 1.0
+        consistency_score = max(0.0, 1.0 - cv)
+    else:
+        consistency_score = 0.0
+    return 0.5 * continuity_score + 0.5 * consistency_score
 
 
 def _fundamental_summary(info: dict) -> str:
@@ -201,6 +248,7 @@ def build_recommendation_table(
         info = dl.get_company_info(t)
         pe = info.get("forwardPE") or info.get("trailingPE")
         company_names[t] = info.get("shortName")
+        div_stability = _dividend_stability(dl.get_dividend_history(t))
 
         # 技術面 sub-signals (each a "more bullish = higher" continuous value, NaN
         # when the window is too short — neutralized by _zscore later).
@@ -252,6 +300,8 @@ def build_recommendation_table(
             "_t_pat": pattern,
             # 籌碼 raw
             "_chip": chip,
+            # 配息穩定性 raw (NaN for non-payers — neutral, not penalized)
+            "_div": div_stability,
             # 1.0 when 現價 is below the 20-day 月線 → 綜合評分 penalty.
             "_below_sma20": 1.0 if (pd.notna(sma20_val) and last_close < sma20_val) else 0.0,
             # 朱家泓 short-term breakout trigger; only consulted for short-horizon
@@ -293,7 +343,8 @@ def build_recommendation_table(
         _subw[k] * _zscore(table[f"_t_{k}"].astype(float)) for k in _subw
     )
     table["籌碼"] = _zscore(table["_chip"].astype(float))
-    table = table.drop(columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c == "_chip"])
+    table["配息穩定性"] = _zscore(table["_div"].astype(float))
+    table = table.drop(columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c in ("_chip", "_div")])
 
     score = pd.Series(0.0, index=table.index)
     for factor, weight in weights.items():

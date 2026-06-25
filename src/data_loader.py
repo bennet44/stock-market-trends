@@ -78,6 +78,17 @@ def get_etf_top_holdings(ticker: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_dividend_history(ticker: str) -> pd.Series:
+    """Full historical per-share dividend payments (ex-div date -> amount)
+    from yfinance. Returns an empty Series for non-payers or on any failure."""
+    try:
+        s = yf.Ticker(ticker).dividends
+    except Exception:
+        return pd.Series(dtype=float)
+    return s if s is not None else pd.Series(dtype=float)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
 def get_twse_company_names() -> dict[str, str]:
     """{stock code: 公司簡稱 (Chinese short name)} for all TWSE-listed companies,
     from the 上市公司基本資料 open-data feed. Returns {} on any failure."""

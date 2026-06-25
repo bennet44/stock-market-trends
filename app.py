@@ -628,7 +628,7 @@ def _render_buy_sell_section(
         )
         reco_aggr = RECO_AGGRESSIVENESS[aggr_label3]
 
-    # 綜合評分的八大因子占比，緊接在「統計期間」等控制項下方一列呈現。
+    # 綜合評分的九大因子占比，緊接在「統計期間」等控制項下方一列呈現。
     # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
     _FACTOR_DISPLAY = {
         "期間報酬率": "期間報酬率",
@@ -639,9 +639,10 @@ def _render_buy_sell_section(
         "基本面": "基本面",
         "籌碼": "籌碼面",
         "新聞情緒": "新聞情緒",
+        "配息穩定性": "配息穩定性",
     }
     st.markdown(
-        f"**綜合評分 ＝ 下列八大因子加權（占比如下）**　"
+        f"**綜合評分 ＝ 下列九大因子加權（占比如下）**　"
         f"已依「統計期間」自動切換為 **{_HORIZON_LABEL[reco_horizon]}** 權重"
     )
     _fcols = st.columns(len(_FACTOR_DISPLAY))
@@ -660,7 +661,7 @@ def _render_buy_sell_section(
         scope_desc = "「美股近期成交量前 30 大」與「S&P 500 成分股」的聯集"
     st.caption(
         f"- **篩選範圍**：{scope_desc}\n"
-        "- **評分方式**：上列八因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
+        "- **評分方式**：上列九因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
         "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
         f"- **建議買入價**：買入＝現價逢低承接（−N日跌幅中位）、賣出＝現價逢高減碼（持有 {hold_display}）\n"
         f"- **建議賣出價／獲利%**：賣出價＝進場價×(1＋N日漲幅中位)；獲利%＝賣出/進場−1\n"
@@ -713,12 +714,12 @@ def _render_buy_sell_section(
                                     horizon=reco_horizon, aggressiveness=reco_aggr), "sell")
 
     _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)"]
-    # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
+    # 基本面/技術面/籌碼/配息穩定性 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
     _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
-                   "RSI (14)", "綜合評分"]
+                   "配息穩定性", "RSI (14)", "綜合評分"]
     _PRICE_COLS = ["建議買入價", "建議賣出價"]
     _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
-                  "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
+                  "估值(1/預估PE)", "基本面", "籌碼", "配息穩定性", "新聞情緒", "RSI (14)",
                   "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
 
     def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
@@ -741,7 +742,7 @@ def _render_buy_sell_section(
         if "綜合評分" in df:
             config["綜合評分"] = st.column_config.NumberColumn(
                 "綜合評分", format="%.2f",
-                help="八因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
+                help="九因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
                      "越高越好，無固定滿分；實務上多落在約 −2 ~ +2。",
             )
         for col in _PRICE_COLS:
@@ -812,7 +813,7 @@ with tab_reco:
 # ---------- Tab 4: 存股區 (long-term buy-and-hold view) ----------
 with tab_stock_hold:
     st.caption(
-        "與「買賣建議」相同的八因子綜合評分公式，但「統計期間」與「持有天數」只保留中期／長期選項"
+        "與「買賣建議」相同的九因子綜合評分公式，但「統計期間」與「持有天數」只保留中期／長期選項"
         "（不含短線交易用的 1~15 天區間），定位為長期存股／逢低布局參考，而非短線進出。"
     )
     _render_buy_sell_section(
