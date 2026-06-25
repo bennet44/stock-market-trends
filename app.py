@@ -118,6 +118,13 @@ RECO_HOLD_OPTIONS = {
 }
 _HOLD_CUSTOM_LABEL = "自訂天數…"
 
+# 存股區 reuses RECO_PERIOD_OPTIONS/RECO_HOLD_OPTIONS but restricted to
+# medium/long-horizon presets — a buy-and-hold view has no business offering
+# 1天/1週 style short-term windows. No 自訂(custom) option either, since a
+# custom day count could re-introduce a short hold by accident.
+_HOLDING_PERIOD_OPTIONS = {k: v for k, v in RECO_PERIOD_OPTIONS.items() if v["horizon"] != "short"}
+_HOLDING_HOLD_OPTIONS = {k: v for k, v in RECO_HOLD_OPTIONS.items() if v > 15}
+
 # 目標積極度 → percentile of the favorable move used for the buy/sell target
 # (中性=50 = median = the prior behaviour; 保守 closer/easier, 積極 farther).
 RECO_AGGRESSIVENESS = {"保守": 30, "中性": 50, "積極": 70}
@@ -195,8 +202,8 @@ market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
 
-tab_overview, tab_reco, tab_compare_risk, tab_fcn = st.tabs(
-    ["📈 價格、技術指標與基本面", "💡 買賣建議", "🔗 多股比較與風險統計", "📐 FCN風險評估"]
+tab_overview, tab_reco, tab_compare_risk, tab_stock_hold, tab_fcn = st.tabs(
+    ["📈 價格、技術指標與基本面", "💡 買賣建議", "🔗 多股比較與風險統計", "🏦 存股區", "📐 FCN風險評估"]
 )
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
@@ -561,37 +568,53 @@ with tab_compare_risk:
         st.warning("無可用資料以計算風險指標。")
 
 # ---------- Tab 3: Buy/sell recommendations ----------
-with tab_reco:
+def _render_buy_sell_section(
+    is_tw: bool, currency: str, tab_key: str,
+    period_options: dict, default_period_label: str,
+    hold_options: dict, default_hold_label: str,
+    allow_zhu_gate: bool, header: str,
+) -> None:
+    """Shared body for 買賣建議 and 存股區: both scan the same universe with
+    the same 8-factor composite formula, but offer a different subset of
+    統計期間/持有天數 presets (存股區 restricts to medium/long-horizon options
+    since it's a buy-and-hold view, not a short-term trading one) and a
+    different widget key namespace (tab_key) so the two tabs' selections
+    don't collide in session_state.
+    """
+    st.subheader(header)
     col_period3, col_topn, col_hold, col_aggr = st.columns(4)
     with col_period3:
+        period_keys = list(period_options.keys())
         period_label = st.selectbox(
-            "統計期間", list(RECO_PERIOD_OPTIONS.keys()), index=7, key=f"period_tab3_{'tw' if is_tw else 'us'}",
+            "統計期間", period_keys, index=period_keys.index(default_period_label),
+            key=f"period_{tab_key}_{'tw' if is_tw else 'us'}",
             help="此處選的期間，就是「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。"
                  "「今年至今(YTD)」則為今年 1 月 1 日至今。",
         )
-        period_spec = RECO_PERIOD_OPTIONS[period_label]
+        period_spec = period_options[period_label]
         period = period_spec["fetch"]
         reco_lookback = period_spec["lookback"]
         reco_horizon = period_spec["horizon"]
         reco_weights = recommend.FACTOR_WEIGHTS_BY_HORIZON[reco_horizon]
     with col_topn:
         top_n = st.selectbox(
-            "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_tab3_{'tw' if is_tw else 'us'}"
+            "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
         )
     with col_hold:
+        hold_keys = list(hold_options.keys()) + ([_HOLD_CUSTOM_LABEL] if allow_zhu_gate else [])
         hold_label = st.selectbox(
-            "持有天數", list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL], index=0,
-            key=f"hold_tab3_{'tw' if is_tw else 'us'}",
+            "持有天數", hold_keys, index=hold_keys.index(default_hold_label),
+            key=f"hold_{tab_key}_{'tw' if is_tw else 'us'}",
             help="預測準確機率以此持有天數（交易日）計算，建議進場／賣出價也用同一持有期。",
         )
         if hold_label == _HOLD_CUSTOM_LABEL:
             hold_days = int(st.number_input(
                 "自訂持有天數（交易日）", min_value=1, max_value=1260, value=5, step=1,
-                key=f"hold_custom_tab3_{'tw' if is_tw else 'us'}",
+                key=f"hold_custom_{tab_key}_{'tw' if is_tw else 'us'}",
             ))
             hold_display = f"{hold_days} 個交易日"
         else:
-            hold_days = RECO_HOLD_OPTIONS[hold_label]
+            hold_days = hold_options[hold_label]
             # Surface the actual trading-day count for week/month/year labels so
             # the caption's 天數 is unambiguously the same as the holding period
             # used in the calculation (e.g. "1個月（21 交易日）"). Day-count labels
@@ -600,7 +623,7 @@ with tab_reco:
     with col_aggr:
         aggr_label3 = st.selectbox(
             "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
-            key=f"aggr_tab3_{'tw' if is_tw else 'us'}",
+            key=f"aggr_{tab_key}_{'tw' if is_tw else 'us'}",
             help="保守＝買賣目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
         )
         reco_aggr = RECO_AGGRESSIVENESS[aggr_label3]
@@ -631,7 +654,6 @@ with tab_reco:
         f"籌碼面資料來源：{chip_src}。"
     )
 
-    st.subheader("基金經理人觀點：建議買入 / 賣出")
     if is_tw:
         scope_desc = "「台股觀察清單（含 ETF 及個股）」"
     else:
@@ -645,11 +667,14 @@ with tab_reco:
         f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
         "- **操作**：點各欄表頭可由大至小／小至大排序\n"
         + (
-            f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
-            "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
-            "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
-            "6~10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
-            if hold_days <= 5 else ""
+            (
+                f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
+                "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
+                "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
+                "6~10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
+                if hold_days <= 5 else ""
+            )
+            if allow_zhu_gate else ""
         )
         + "\n"
         f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
@@ -670,110 +695,134 @@ with tab_reco:
             lookback_days=reco_lookback, weights=reco_weights, horizon=reco_horizon)
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認統計期間。")
-    else:
-        # ≤5 交易日 only: gate buy picks to 朱家泓-style breakout triggers
-        # (現價>上升MA20 且 收盤突破MA5+前日高點), not just highest score.
-        # Backtested 2026-02~06 美股: lifts win rate at 1/3/5 天 (~54%→60% at
-        # 1天); a separate 6~10 天 backtest found no reliable improvement
-        # (sometimes worse), so the gate stops at 5 天.
-        _zhu_gate = "_zhu_signal" if hold_days <= 5 else None
-        buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n, require_signal_col=_zhu_gate)
-        buy_df = recommend.add_reason(
-            recommend.add_price_targets(buy_df, "buy", currency, hold_days,
-                                        horizon=reco_horizon, aggressiveness=reco_aggr), "buy")
-        sell_df = recommend.add_reason(
-            recommend.add_price_targets(sell_df, "sell", currency, hold_days,
-                                        horizon=reco_horizon, aggressiveness=reco_aggr), "sell")
+        return
 
-        _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)"]
-        # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
-        _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
-                       "RSI (14)", "綜合評分"]
-        _PRICE_COLS = ["建議買入價", "建議賣出價"]
-        _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
-                      "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
-                      "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
+    # ≤5 交易日 only: gate buy picks to 朱家泓-style breakout triggers
+    # (現價>上升MA20 且 收盤突破MA5+前日高點), not just highest score.
+    # Backtested 2026-02~06 美股: lifts win rate at 1/3/5 天 (~54%→60% at
+    # 1天); a separate 6~10 天 backtest found no reliable improvement
+    # (sometimes worse), so the gate stops at 5 天. 存股區's hold options
+    # are all >15 天 (allow_zhu_gate=False), so this never fires there.
+    _zhu_gate = "_zhu_signal" if (allow_zhu_gate and hold_days <= 5) else None
+    buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n, require_signal_col=_zhu_gate)
+    buy_df = recommend.add_reason(
+        recommend.add_price_targets(buy_df, "buy", currency, hold_days,
+                                    horizon=reco_horizon, aggressiveness=reco_aggr), "buy")
+    sell_df = recommend.add_reason(
+        recommend.add_price_targets(sell_df, "sell", currency, hold_days,
+                                    horizon=reco_horizon, aggressiveness=reco_aggr), "sell")
 
-        def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
-            fmt = df.copy()
-            for col in _PCT_COLS:
-                fmt[col] = fmt[col] * 100
-            fmt.index = [_display_name(t) for t in fmt.index]
-            return fmt
+    _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)"]
+    # 基本面/技術面/籌碼 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
+    _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
+                   "RSI (14)", "綜合評分"]
+    _PRICE_COLS = ["建議買入價", "建議賣出價"]
+    _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
+                  "估值(1/預估PE)", "基本面", "籌碼", "新聞情緒", "RSI (14)",
+                  "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
 
-        def _column_config(df: pd.DataFrame) -> dict:
-            config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表預測準確機率越高。")}
-            # 獲利% and 預測準確機率 are already stored as percentages (not fractions),
-            # so they only get the %% format, not the *100 in _format_reco.
-            for col in _PCT_COLS + ["獲利%", "預測準確機率"]:
-                if col in df:
-                    config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
-            for col in _PLAIN_COLS:
-                if col in df:
-                    config[col] = st.column_config.NumberColumn(col, format="%.2f")
-            if "綜合評分" in df:
-                config["綜合評分"] = st.column_config.NumberColumn(
-                    "綜合評分", format="%.2f",
-                    help="八因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
-                         "越高越好，無固定滿分；實務上多落在約 −2 ~ +2。",
-                )
-            for col in _PRICE_COLS:
-                if col in df:
-                    config[col] = st.column_config.NumberColumn(col, format=f"{currency}%.2f")
-            return config
+    def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
+        fmt = df.copy()
+        for col in _PCT_COLS:
+            fmt[col] = fmt[col] * 100
+        fmt.index = [_display_name(t) for t in fmt.index]
+        return fmt
 
-        # Merge buy + sell into one table: unify the two side-specific price
-        # columns to 進場價/目標價, prepend a 建議 dot, and keep buys (high score)
-        # above sells. The dot is coloured green (buy) / red (sell) and shaded
-        # by 預測準確機率 via a Styler.
-        buy_u = buy_df.rename(columns={"建議買入價": "建議買入價", "目標賣出價": "建議賣出價"})
-        sell_u = sell_df.rename(columns={"建議賣出價": "建議買入價", "逢低買回參考價": "建議賣出價"})
-        buy_u["建議"] = "●"
-        sell_u["建議"] = "●"
-        merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])
-        if "備註" in merged.columns:
-            merged["備註"] = merged["備註"].fillna("")
-        merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
-        _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
-        _future = merged["預測準確機率"].tolist() if "預測準確機率" in merged else [None] * len(merged)
-        # Min–max normalize 預測準確機率 across the table so the green/red gradient
-        # always spans the full visible range (a fixed 0–40% scale made every dot
-        # look the same dark shade when win rates clustered high).
-        _vals = [w for w in _future if w is not None and pd.notna(w)]
-        _fmin, _fmax = (min(_vals), max(_vals)) if _vals else (0.0, 1.0)
-        _span = (_fmax - _fmin) or 1.0
+    def _column_config(df: pd.DataFrame) -> dict:
+        config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表預測準確機率越高。")}
+        # 獲利% and 預測準確機率 are already stored as percentages (not fractions),
+        # so they only get the %% format, not the *100 in _format_reco.
+        for col in _PCT_COLS + ["獲利%", "預測準確機率"]:
+            if col in df:
+                config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
+        for col in _PLAIN_COLS:
+            if col in df:
+                config[col] = st.column_config.NumberColumn(col, format="%.2f")
+        if "綜合評分" in df:
+            config["綜合評分"] = st.column_config.NumberColumn(
+                "綜合評分", format="%.2f",
+                help="八因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
+                     "越高越好，無固定滿分；實務上多落在約 −2 ~ +2。",
+            )
+        for col in _PRICE_COLS:
+            if col in df:
+                config[col] = st.column_config.NumberColumn(col, format=f"{currency}%.2f")
+        return config
 
-        def _signal_styles(df: pd.DataFrame) -> pd.DataFrame:
-            css = pd.DataFrame("", index=df.index, columns=df.columns)
-            loc = df.columns.get_loc("建議")
-            for i, (side, w) in enumerate(zip(_sides, _future)):
-                frac = (w - _fmin) / _span if (w is not None and pd.notna(w)) else 0.0
-                rgb = _signal_rgb(side, frac)
-                # Fill the whole cell with the gradient colour; matching text
-                # colour hides the ● glyph so the cell reads as a solid block.
-                css.iloc[i, loc] = f"background-color: {rgb}; color: {rgb}"
-            return css
+    # Merge buy + sell into one table: unify the two side-specific price
+    # columns to 進場價/目標價, prepend a 建議 dot, and keep buys (high score)
+    # above sells. The dot is coloured green (buy) / red (sell) and shaded
+    # by 預測準確機率 via a Styler.
+    buy_u = buy_df.rename(columns={"建議買入價": "建議買入價", "目標賣出價": "建議賣出價"})
+    sell_u = sell_df.rename(columns={"建議賣出價": "建議買入價", "逢低買回參考價": "建議賣出價"})
+    buy_u["建議"] = "●"
+    sell_u["建議"] = "●"
+    merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])
+    if "備註" in merged.columns:
+        merged["備註"] = merged["備註"].fillna("")
+    merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
+    _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
+    _future = merged["預測準確機率"].tolist() if "預測準確機率" in merged else [None] * len(merged)
+    # Min–max normalize 預測準確機率 across the table so the green/red gradient
+    # always spans the full visible range (a fixed 0–40% scale made every dot
+    # look the same dark shade when win rates clustered high).
+    _vals = [w for w in _future if w is not None and pd.notna(w)]
+    _fmin, _fmax = (min(_vals), max(_vals)) if _vals else (0.0, 1.0)
+    _span = (_fmax - _fmin) or 1.0
 
-        st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔")
-        st.dataframe(
-            merged.style.apply(_signal_styles, axis=None),
-            use_container_width=True, column_config=_column_config(merged),
-        )
+    def _signal_styles(df: pd.DataFrame) -> pd.DataFrame:
+        css = pd.DataFrame("", index=df.index, columns=df.columns)
+        loc = df.columns.get_loc("建議")
+        for i, (side, w) in enumerate(zip(_sides, _future)):
+            frac = (w - _fmin) / _span if (w is not None and pd.notna(w)) else 0.0
+            rgb = _signal_rgb(side, frac)
+            # Fill the whole cell with the gradient colour; matching text
+            # colour hides the ● glyph so the cell reads as a solid block.
+            css.iloc[i, loc] = f"background-color: {rgb}; color: {rgb}"
+        return css
 
-        if len(buy_df) < top_n:
-            if _zhu_gate:
-                st.info(
-                    f"買入清單僅 {len(buy_df)} 檔（非選擇的 Top {top_n}）：持有 {hold_display} 採用"
-                    "朱家泓式進場濾網（現價站上向上的MA20、且收盤同時突破MA5與前一日高點），"
-                    "目前範圍內符合此突破訊號的標的較少，沒訊號不勉強湊數。"
-                )
-            else:
-                st.info(
-                    f"目前範圍共 {len(reco_table)} 檔標的，為避免買入／賣出名單重複，"
-                    f"已各自裁切為 {len(buy_df)} 檔（最多取清單一半），而非選擇的 Top {top_n}。"
-                )
+    st.markdown(f"#### 建議買入（綠）{len(buy_df)} 檔 ／ 賣出（紅）{len(sell_df)} 檔")
+    st.dataframe(
+        merged.style.apply(_signal_styles, axis=None),
+        use_container_width=True, column_config=_column_config(merged),
+    )
 
-# ---------- Tab 4: FCN risk assessment ----------
+    if len(buy_df) < top_n:
+        if _zhu_gate:
+            st.info(
+                f"買入清單僅 {len(buy_df)} 檔（非選擇的 Top {top_n}）：持有 {hold_display} 採用"
+                "朱家泓式進場濾網（現價站上向上的MA20、且收盤同時突破MA5與前一日高點），"
+                "目前範圍內符合此突破訊號的標的較少，沒訊號不勉強湊數。"
+            )
+        else:
+            st.info(
+                f"目前範圍共 {len(reco_table)} 檔標的，為避免買入／賣出名單重複，"
+                f"已各自裁切為 {len(buy_df)} 檔（最多取清單一半），而非選擇的 Top {top_n}。"
+            )
+
+
+with tab_reco:
+    _render_buy_sell_section(
+        is_tw, currency, "tab3",
+        RECO_PERIOD_OPTIONS, "1年",
+        RECO_HOLD_OPTIONS, "1~5天",
+        allow_zhu_gate=True, header="基金經理人觀點：建議買入 / 賣出",
+    )
+
+# ---------- Tab 4: 存股區 (long-term buy-and-hold view) ----------
+with tab_stock_hold:
+    st.caption(
+        "與「買賣建議」相同的八因子綜合評分公式，但「統計期間」與「持有天數」只保留中期／長期選項"
+        "（不含短線交易用的 1~15 天區間），定位為長期存股／逢低布局參考，而非短線進出。"
+    )
+    _render_buy_sell_section(
+        is_tw, currency, "tab_hold",
+        _HOLDING_PERIOD_OPTIONS, "1年",
+        _HOLDING_HOLD_OPTIONS, "1年",
+        allow_zhu_gate=False, header="長期存股觀點：建議買入 / 賣出",
+    )
+
+# ---------- Tab 5: FCN risk assessment ----------
 with tab_fcn:
     st.subheader("FCN 風險評估與條款試算")
     st.caption(
