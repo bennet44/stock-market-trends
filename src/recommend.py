@@ -345,6 +345,7 @@ def build_recommendation_table(
         pe = info.get("forwardPE") or info.get("trailingPE")
         company_names[t] = info.get("shortName")
         div_stability = _dividend_stability(dl.get_dividend_history(t))
+        is_etf = info.get("quoteType") == "ETF"
 
         # 技術面 sub-signals (each a "more bullish = higher" continuous value, NaN
         # when the window is too short — neutralized by _zscore later).
@@ -398,6 +399,12 @@ def build_recommendation_table(
             "_chip": chip,
             # 配息穩定性 raw (NaN for non-payers — neutral, not penalized)
             "_div": div_stability,
+            # ETFs have no company fundamentals (revenueGrowth/ROE/etc.), so
+            # 基本面 is structurally unscorable for them, not just "missing
+            # data" for one ticker — its weight is reallocated to the other
+            # factors for ETF rows (see the scoring loop below) instead of
+            # quietly capping ETFs' max achievable score.
+            "_is_etf": 1.0 if is_etf else 0.0,
             # 1.0 when 現價 is below the 20-day 月線 → 綜合評分 penalty.
             "_below_sma20": 1.0 if (pd.notna(sma20_val) and last_close < sma20_val) else 0.0,
             # 朱家泓 short-term breakout trigger; only consulted for short-horizon
@@ -442,11 +449,26 @@ def build_recommendation_table(
     table["配息穩定性"] = _zscore(table["_div"].astype(float))
     table = table.drop(columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c in ("_chip", "_div")])
 
+    # ETFs can't score on 基本面 (no company fundamentals), so for ETF rows
+    # only, that weight is redistributed across the other factors in
+    # proportion to their existing weights — same total weight (still sums to
+    # 1.0), just not silently wasted on a factor an ETF can never earn.
+    is_etf = table["_is_etf"].astype(float) >= 1.0
+    other_factors = [f for f in weights if f != "基本面"]
+    other_weight_sum = sum(weights[f] for f in other_factors)
     score = pd.Series(0.0, index=table.index)
     for factor, weight in weights.items():
-        contribution = _zscore(table[factor].astype(float)) * weight
+        if factor == "基本面":
+            w = pd.Series(weight, index=table.index).where(~is_etf, 0.0)
+        elif other_weight_sum:
+            bonus = weights["基本面"] * (weight / other_weight_sum)
+            w = pd.Series(weight, index=table.index).where(~is_etf, weight + bonus)
+        else:
+            w = pd.Series(weight, index=table.index)
+        contribution = _zscore(table[factor].astype(float)) * w
         table[_CONTRIB_PREFIX + factor] = contribution
         score = score + contribution
+    table = table.drop(columns=["_is_etf"])
     # Strength gate: stocks trading below the 20-day 月線 are penalized.
     table["綜合評分"] = score - SMA20_PENALTY * table["_below_sma20"].astype(float)
     return table.sort_values("綜合評分", ascending=False)
