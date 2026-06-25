@@ -572,15 +572,19 @@ def _render_buy_sell_section(
     is_tw: bool, currency: str, tab_key: str,
     period_options: dict, default_period_label: str,
     hold_options: dict, default_hold_label: str,
-    allow_zhu_gate: bool, header: str,
+    allow_zhu_gate: bool, header: str, show_formula_caption: bool = True,
+    weight_table: dict | None = None,
 ) -> None:
     """Shared body for 買賣建議 and 存股區: both scan the same universe with
-    the same 8-factor composite formula, but offer a different subset of
+    the same 9-factor composite formula, but offer a different subset of
     統計期間/持有天數 presets (存股區 restricts to medium/long-horizon options
-    since it's a buy-and-hold view, not a short-term trading one) and a
+    since it's a buy-and-hold view, not a short-term trading one), a
     different widget key namespace (tab_key) so the two tabs' selections
-    don't collide in session_state.
+    don't collide in session_state, and optionally a different weight_table
+    (存股區 passes recommend.FACTOR_WEIGHTS_HOLDING, which leans harder into
+    基本面/配息穩定性 than the general-purpose FACTOR_WEIGHTS_BY_HORIZON).
     """
+    weight_table = weight_table or recommend.FACTOR_WEIGHTS_BY_HORIZON
     st.subheader(header)
     col_period3, col_topn, col_hold, col_aggr = st.columns(4)
     with col_period3:
@@ -595,7 +599,7 @@ def _render_buy_sell_section(
         period = period_spec["fetch"]
         reco_lookback = period_spec["lookback"]
         reco_horizon = period_spec["horizon"]
-        reco_weights = recommend.FACTOR_WEIGHTS_BY_HORIZON[reco_horizon]
+        reco_weights = weight_table[reco_horizon]
     with col_topn:
         top_n = st.selectbox(
             "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
@@ -655,37 +659,38 @@ def _render_buy_sell_section(
         f"籌碼面資料來源：{chip_src}。"
     )
 
-    if is_tw:
-        scope_desc = "「台股觀察清單（含 ETF 及個股）」"
-    else:
-        scope_desc = "「美股近期成交量前 30 大」與「S&P 500 成分股」的聯集"
-    st.caption(
-        f"- **篩選範圍**：{scope_desc}\n"
-        "- **評分方式**：上列九因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
-        "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
-        f"- **建議買入價**：買入＝現價逢低承接（−N日跌幅中位）、賣出＝現價逢高減碼（持有 {hold_display}）\n"
-        f"- **建議賣出價／獲利%**：賣出價＝進場價×(1＋N日漲幅中位)；獲利%＝賣出/進場−1\n"
-        f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
-        "- **操作**：點各欄表頭可由大至小／小至大排序\n"
-        + (
-            (
-                f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
-                "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
-                "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
-                "6~10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
-                if hold_days <= 5 else ""
+    if show_formula_caption:
+        if is_tw:
+            scope_desc = "「台股觀察清單（含 ETF 及個股）」"
+        else:
+            scope_desc = "「美股近期成交量前 30 大」與「S&P 500 成分股」的聯集"
+        st.caption(
+            f"- **篩選範圍**：{scope_desc}\n"
+            "- **評分方式**：上列九因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
+            "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
+            f"- **建議買入價**：買入＝現價逢低承接（−N日跌幅中位）、賣出＝現價逢高減碼（持有 {hold_display}）\n"
+            f"- **建議賣出價／獲利%**：賣出價＝進場價×(1＋N日漲幅中位)；獲利%＝賣出/進場−1\n"
+            f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
+            "- **操作**：點各欄表頭可由大至小／小至大排序\n"
+            + (
+                (
+                    f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
+                    "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
+                    "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
+                    "6~10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
+                    if hold_days <= 5 else ""
+                )
+                if allow_zhu_gate else ""
             )
-            if allow_zhu_gate else ""
+            + "\n"
+            f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
+            "並依技術訊號微調：u→u×(1+0.4×技術偏多度)、d→d×(1−0.4×技術偏多度)，"
+            "技術偏多度由 布林/SMA多頭/型態+動能 依持有天數加權）：\n"
+            "1. 建議買入價＝現價×(1+d)〔買〕／ 現價×(1+u)〔賣〕\n"
+            "2. 建議賣出價＝現價×(1+u)〔買〕／ 現價×(1+d)〔賣〕\n"
+            "3. 獲利%＝建議賣出價 / 建議買入價 − 1\n"
+            "4. 預測準確機率＝歷史上 N 日內「最高價≥建議賣出價」〔買〕／「最低價≤建議賣出價」〔賣〕的比例"
         )
-        + "\n"
-        f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
-        "並依技術訊號微調：u→u×(1+0.4×技術偏多度)、d→d×(1−0.4×技術偏多度)，"
-        "技術偏多度由 布林/SMA多頭/型態+動能 依持有天數加權）：\n"
-        "1. 建議買入價＝現價×(1+d)〔買〕／ 現價×(1+u)〔賣〕\n"
-        "2. 建議賣出價＝現價×(1+u)〔買〕／ 現價×(1+d)〔賣〕\n"
-        "3. 獲利%＝建議賣出價 / 建議買入價 − 1\n"
-        "4. 預測準確機率＝歷史上 N 日內「最高價≥建議賣出價」〔買〕／「最低價≤建議賣出價」〔賣〕的比例"
-    )
     if is_tw:
         reco_universe = universe.get_twse_tickers()
     else:
@@ -813,14 +818,17 @@ with tab_reco:
 # ---------- Tab 4: 存股區 (long-term buy-and-hold view) ----------
 with tab_stock_hold:
     st.caption(
-        "與「買賣建議」相同的九因子綜合評分公式，但「統計期間」與「持有天數」只保留中期／長期選項"
-        "（不含短線交易用的 1~15 天區間），定位為長期存股／逢低布局參考，而非短線進出。"
+        "與「買賣建議」同樣的九大因子，但權重改用存股取向的配置：著重**基本面（營收/盈餘成長、ROE、淨利率"
+        "——成長潛力）**與**配息穩定性**，淡化期間報酬率/技術面/籌碼/新聞情緒/價格趨勢等短線訊號。"
+        "「統計期間」與「持有天數」也只保留中期／長期選項（不含短線交易用的 1~15 天區間），"
+        "定位為長期存股／逢低布局參考，而非短線進出。"
     )
     _render_buy_sell_section(
         is_tw, currency, "tab_hold",
         _HOLDING_PERIOD_OPTIONS, "1年",
         _HOLDING_HOLD_OPTIONS, "1年",
         allow_zhu_gate=False, header="長期存股觀點：建議買入 / 賣出",
+        show_formula_caption=False, weight_table=recommend.FACTOR_WEIGHTS_HOLDING,
     )
 
 # ---------- Tab 5: FCN risk assessment ----------

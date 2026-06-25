@@ -57,6 +57,37 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "配息穩定性": 0.10,
     },
 }
+
+# 存股區's own weight profile (medium/long only — 存股區 has no short
+# option): heavily favors 基本面（成長潛力：營收/盈餘成長、ROE、淨利率）and
+# 配息穩定性，de-emphasizes short-term-relevant noise (期間報酬率/技術面/
+# 籌碼/新聞情緒/趨勢) relative to FACTOR_WEIGHTS_BY_HORIZON's general-purpose
+# medium/long weights, which still allocate meaningfully to momentum/news for
+# the 買賣建議 tab's shorter "medium" selections (3個月/6個月/YTD).
+FACTOR_WEIGHTS_HOLDING = {
+    "medium": {
+        "期間報酬率": 0.05,
+        "技術面": 0.05,
+        "籌碼": 0.05,
+        "新聞情緒": 0.05,
+        "趨勢(價格/均線)": 0.05,
+        "Sharpe Ratio": 0.15,
+        "估值(1/預估PE)": 0.15,
+        "基本面": 0.25,
+        "配息穩定性": 0.20,
+    },
+    "long": {
+        "期間報酬率": 0.03,
+        "技術面": 0.03,
+        "籌碼": 0.03,
+        "新聞情緒": 0.03,
+        "趨勢(價格/均線)": 0.03,
+        "Sharpe Ratio": 0.15,
+        "估值(1/預估PE)": 0.15,
+        "基本面": 0.30,
+        "配息穩定性": 0.25,
+    },
+}
 # Default / backward-compatible weights when no horizon is specified.
 FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 
