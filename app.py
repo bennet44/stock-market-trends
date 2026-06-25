@@ -574,6 +574,7 @@ def _render_buy_sell_section(
     hold_options: dict, default_hold_label: str,
     allow_zhu_gate: bool, header: str, show_formula_caption: bool = True,
     weight_table: dict | None = None, dividend_screen: bool = False,
+    dividend_top_yield: int = 50, dividend_top_fill: int = 30,
 ) -> None:
     """Shared body for 買賣建議 and 存股區: both scan the same universe with
     the same 9-factor composite formula, but offer a different subset of
@@ -698,11 +699,15 @@ def _render_buy_sell_section(
 
     if dividend_screen:
         with st.spinner(f"正在計算 {len(reco_universe)} 檔標的的殖利率／填息率…"):
-            screen_df = recommend.dividend_fill_screen(reco_universe)
+            screen_df = recommend.dividend_fill_screen(
+                reco_universe, top_yield=dividend_top_yield, top_fill=dividend_top_fill)
         if screen_df.empty:
             st.warning("目前範圍內沒有足夠的配息資料可供篩選，已停用此篩選、改用完整候選範圍。")
         else:
-            with st.expander(f"配息殖利率前50高 ∩ 填息率前30高：{len(screen_df)} 檔標的（點開查看）"):
+            with st.expander(
+                f"配息殖利率前{dividend_top_yield}高 ∩ 填息率前{dividend_top_fill}高："
+                f"{len(screen_df)} 檔標的（點開查看）"
+            ):
                 disp = screen_df.copy()
                 disp["殖利率"] = (disp["殖利率"] * 100).map(lambda v: f"{v:.2f}%")
                 disp["填息率"] = (disp["填息率"] * 100).map(lambda v: f"{v:.0f}%")
@@ -838,18 +843,31 @@ with tab_stock_hold:
         "「統計期間」與「持有天數」也只保留中期／長期選項（不含短線交易用的 1~15 天區間），"
         "定位為長期存股／逢低布局參考，而非短線進出。"
     )
-    _dividend_screen_on = st.checkbox(
-        "套用「今年配息殖利率前50高 ∩ 填息率前30高」篩選",
-        key=f"dividend_screen_{'tw' if is_tw else 'us'}",
-        help="先把候選範圍縮小到近12個月殖利率前50高、且其中填息率（除息缺口60個交易日內回補的比例）前30高的"
-             "標的，再用下方九因子公式排序；不是另一套公式，是排序前的候選範圍篩選。",
-    )
+    col_div_chk, col_div_yield_n, col_div_fill_n = st.columns([2, 1, 1])
+    with col_div_chk:
+        _dividend_screen_on = st.checkbox(
+            "套用「今年配息殖利率前N高 ∩ 填息率前N高」篩選",
+            key=f"dividend_screen_{'tw' if is_tw else 'us'}",
+            help="先把候選範圍縮小到近12個月殖利率前N高、且其中填息率（除息缺口60個交易日內回補的比例）前N高的"
+                 "標的，再用下方九因子公式排序；不是另一套公式，是排序前的候選範圍篩選。",
+        )
+    with col_div_yield_n:
+        _div_top_yield = int(st.number_input(
+            "殖利率前N高", min_value=1, max_value=500, value=50, step=1,
+            key=f"div_top_yield_{'tw' if is_tw else 'us'}", disabled=not _dividend_screen_on,
+        ))
+    with col_div_fill_n:
+        _div_top_fill = int(st.number_input(
+            "填息率前N高", min_value=1, max_value=_div_top_yield, value=min(30, _div_top_yield), step=1,
+            key=f"div_top_fill_{'tw' if is_tw else 'us'}", disabled=not _dividend_screen_on,
+        ))
     _render_buy_sell_section(
         is_tw, currency, "tab_hold",
         _HOLDING_PERIOD_OPTIONS, "1年",
         _HOLDING_HOLD_OPTIONS, "1年",
         allow_zhu_gate=False, header="長期存股觀點：建議買入 / 賣出",
         show_formula_caption=False, weight_table=recommend.FACTOR_WEIGHTS_HOLDING,
+        dividend_top_yield=_div_top_yield, dividend_top_fill=_div_top_fill,
         dividend_screen=_dividend_screen_on,
     )
 
