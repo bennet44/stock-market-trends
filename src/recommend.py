@@ -110,6 +110,10 @@ _TREND_SMA_BY_HORIZON = {"short": 5, "medium": 20, "long": 60}
 SMA20_PENALTY = 0.5
 
 _NEWS_FETCH_WORKERS = 12
+# Per-ticker price/info/dividend fetches in build_recommendation_table are
+# I/O-bound (network round-trips, not CPU), so a larger pool than the news
+# fetch's is fine — there's no shared rate-limited API key/quota here.
+_SCORE_FETCH_WORKERS = 20
 
 _FACTOR_LABELS = {
     "期間報酬率": "期間報酬率",
@@ -321,12 +325,10 @@ def build_recommendation_table(
         dl.get_twse_institutional_net()
         if any(t.endswith((".TW", ".TWO")) for t in tickers) else {}
     )
-    rows = {}
-    company_names = {}
-    for t in tickers:
+    def _score_one(t: str) -> tuple[str, dict] | None:
         df = dl.get_price_history(t, period=period)
         if df.empty or len(df) < 2:
-            continue
+            return None
         # Computed on the full period-fetched df (before the lookback_days
         # trim below), since short-hold lookbacks (1/3/5 天) are too few bars
         # for a meaningful MA5/MA20 read — see zhu_breakout_signal.
@@ -334,7 +336,7 @@ def build_recommendation_table(
         zhu_vol_ok = zhu_volume_confirmed(df["Volume"])
         win = df.iloc[-(lookback_days + 1):] if lookback_days is not None else df
         if len(win) < 2:
-            continue
+            return None
         close = win["Close"]
         high, low, volume = win["High"], win["Low"], win["Volume"]
         last_close = close.iloc[-1]
@@ -343,7 +345,6 @@ def build_recommendation_table(
         sma20_val = ta.sma(close, 20).iloc[-1]  # 月線, for the strength penalty
         info = dl.get_company_info(t)
         pe = info.get("forwardPE") or info.get("trailingPE")
-        company_names[t] = info.get("shortName")
         div_stability = _dividend_stability(dl.get_dividend_history(t))
         is_etf = info.get("quoteType") == "ETF"
 
@@ -376,7 +377,7 @@ def build_recommendation_table(
             cmf = ta.chaikin_money_flow(high, low, close, volume, window=min(20, max(2, len(win) - 1)))
             chip = cmf.iloc[-1] if len(cmf) else np.nan
 
-        rows[t] = {
+        row = {
             "最新收盤價": last_close,
             "期間報酬率": last_close / close.iloc[0] - 1,
             "Sharpe Ratio": risk_mod.sharpe_ratio(rets, risk_free_rate),
@@ -414,7 +415,23 @@ def build_recommendation_table(
             # 原因說明 enrichments (display-only strings)
             "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist, info),
             "基本面摘要": _fundamental_summary(info),
+            "_company_name": info.get("shortName"),
         }
+        return t, row
+
+    rows = {}
+    company_names = {}
+    # Per-ticker scoring is dominated by network I/O (price/info/dividend
+    # fetches), so it's run concurrently — same pattern as the news-sentiment
+    # fetch below. This is what took a 272-ticker TW universe scan from
+    # several minutes down to tens of seconds.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_SCORE_FETCH_WORKERS) as pool:
+        for result in pool.map(_score_one, tickers):
+            if result is None:
+                continue
+            t, row = result
+            company_names[t] = row.pop("_company_name")
+            rows[t] = row
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=_NEWS_FETCH_WORKERS) as pool:
         futures = {
