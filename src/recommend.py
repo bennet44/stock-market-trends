@@ -65,27 +65,35 @@ FACTOR_WEIGHTS_BY_HORIZON = {
 # medium/long weights, which still allocate meaningfully to momentum/news for
 # the 買賣建議 tab's shorter "medium" selections (3個月/6個月/YTD).
 FACTOR_WEIGHTS_HOLDING = {
+    # 配息穩定性 is intentionally weighted ~0 here — it's shown in the table
+    # (連續配發/年度金額穩定度) for reference, but per user feedback it
+    # shouldn't drive the ranking. That weight has been redistributed to
+    # 殖利率 (actual dividend yield — "高股息") plus a bit more on
+    # 期間報酬率/趨勢/基本面 (capital-gain potential — "資本利得"), matching
+    # the 存股區 goal of 高股息且有資本利得.
     "medium": {
-        "期間報酬率": 0.05,
+        "期間報酬率": 0.08,
         "技術面": 0.05,
         "籌碼": 0.05,
         "新聞情緒": 0.05,
-        "趨勢(價格/均線)": 0.05,
-        "Sharpe Ratio": 0.15,
-        "估值(1/預估PE)": 0.15,
+        "趨勢(價格/均線)": 0.08,
+        "Sharpe Ratio": 0.12,
+        "估值(1/預估PE)": 0.12,
         "基本面": 0.25,
-        "配息穩定性": 0.20,
+        "殖利率": 0.20,
+        "配息穩定性": 0.00,
     },
     "long": {
-        "期間報酬率": 0.03,
+        "期間報酬率": 0.05,
         "技術面": 0.03,
         "籌碼": 0.03,
         "新聞情緒": 0.03,
-        "趨勢(價格/均線)": 0.03,
-        "Sharpe Ratio": 0.15,
-        "估值(1/預估PE)": 0.15,
+        "趨勢(價格/均線)": 0.07,
+        "Sharpe Ratio": 0.12,
+        "估值(1/預估PE)": 0.12,
         "基本面": 0.30,
-        "配息穩定性": 0.25,
+        "殖利率": 0.25,
+        "配息穩定性": 0.00,
     },
 }
 # Default / backward-compatible weights when no horizon is specified.
@@ -125,6 +133,7 @@ _FACTOR_LABELS = {
     "技術面": "技術面",
     "籌碼": "籌碼面",
     "配息穩定性": "配息穩定性(連續配發/年度金額穩定度)",
+    "殖利率": "殖利率(近12個月)",
 }
 _CONTRIB_PREFIX = "_contrib_"
 
@@ -181,6 +190,23 @@ def _technical_summary(rsi, k, d, macd_hist, info: dict) -> str:
     if dy:
         parts.append(f"殖利率{dy * 100:.2f}%")
     return "、".join(parts)
+
+
+def _trailing_dividend_yield(dividends: pd.Series, asof, price: float) -> float:
+    """Trailing-12-month dividend yield (TTM dividends / price) as of `asof`
+    (the ticker's own last bar, not wall-clock now — keeps this backtest-safe
+    the same way zhu_breakout_signal is). NaN if no usable dividend history.
+    This is the "高股息" signal; 配息穩定性 (continuity/consistency) is a
+    separate, informational-only metric — see build_recommendation_table.
+    """
+    if dividends is None or dividends.empty or not price:
+        return np.nan
+    asof_naive = asof.tz_localize(None) if getattr(asof, "tzinfo", None) is not None else asof
+    div_idx = dividends.index.tz_localize(None) if dividends.index.tz is not None else dividends.index
+    ttm = dividends[(div_idx > asof_naive - pd.Timedelta(days=365)) & (div_idx <= asof_naive)]
+    if ttm.empty:
+        return np.nan
+    return float(ttm.sum()) / float(price)
 
 
 def _dividend_stability(dividends: pd.Series) -> float:
@@ -345,7 +371,13 @@ def build_recommendation_table(
         sma20_val = ta.sma(close, 20).iloc[-1]  # 月線, for the strength penalty
         info = dl.get_company_info(t)
         pe = info.get("forwardPE") or info.get("trailingPE")
-        div_stability = _dividend_stability(dl.get_dividend_history(t))
+        divs = dl.get_dividend_history(t)
+        div_stability = _dividend_stability(divs)
+        # yfinance occasionally returns a still-open current trading day as
+        # an all-NaN OHLC row; fall back to the last actually-priced close
+        # so a transient incomplete bar doesn't blank out the yield calc.
+        _yield_price = last_close if pd.notna(last_close) else close.dropna().iloc[-1] if close.dropna().size else np.nan
+        div_yield = _trailing_dividend_yield(divs, df.index[-1], _yield_price)
         is_etf = info.get("quoteType") == "ETF"
 
         # 技術面 sub-signals (each a "more bullish = higher" continuous value, NaN
@@ -400,6 +432,10 @@ def build_recommendation_table(
             "_chip": chip,
             # 配息穩定性 raw (NaN for non-payers — neutral, not penalized)
             "_div": div_stability,
+            # 殖利率 raw, used both as a scored factor (z-scored below) and
+            # displayed directly as a percentage (raw fraction here).
+            "_yield": div_yield,
+            "殖利率%": div_yield,
             # ETFs have no company fundamentals (revenueGrowth/ROE/etc.), so
             # 基本面 is structurally unscorable for them, not just "missing
             # data" for one ticker — its weight is reallocated to the other
@@ -464,7 +500,9 @@ def build_recommendation_table(
     )
     table["籌碼"] = _zscore(table["_chip"].astype(float))
     table["配息穩定性"] = _zscore(table["_div"].astype(float))
-    table = table.drop(columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c in ("_chip", "_div")])
+    table["殖利率"] = _zscore(table["_yield"].astype(float))
+    table = table.drop(
+        columns=[c for c in table.columns if c.startswith(("_f_", "_t_")) or c in ("_chip", "_div", "_yield")])
 
     # ETFs can't score on 基本面 (no company fundamentals), so for ETF rows
     # only, that weight is redistributed across the other factors in

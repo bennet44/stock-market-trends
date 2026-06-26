@@ -656,9 +656,10 @@ def _render_buy_sell_section(
         )
         reco_aggr = RECO_AGGRESSIVENESS[aggr_label3]
 
-    # 綜合評分的九大因子占比，緊接在「統計期間」等控制項下方一列呈現。
-    # 權重取自 recommend.FACTOR_WEIGHTS_BY_HORIZON，避免與實際評分邏輯不同步。
-    _FACTOR_DISPLAY = {
+    # 因子占比，緊接在「統計期間」等控制項下方一列呈現。權重直接取自
+    # weight_table（reco_weights），所以買賣建議(9因子)跟存股區(10因子，多了
+    # 殖利率)即使因子數不同，這裡也會自動對齊，不需要兩份硬寫的清單。
+    _FACTOR_LABELS_ALL = {
         "期間報酬率": "期間報酬率",
         "技術面": "技術面(動能+布林+SMA+型態)",
         "趨勢(價格/均線)": "價格趨勢",
@@ -667,10 +668,12 @@ def _render_buy_sell_section(
         "基本面": "基本面",
         "籌碼": "籌碼面",
         "新聞情緒": "新聞情緒",
-        "配息穩定性": "配息穩定性",
+        "配息穩定性": "配息波動率(僅供參考)",
+        "殖利率": "殖利率",
     }
+    _FACTOR_DISPLAY = {k: _FACTOR_LABELS_ALL.get(k, k) for k in reco_weights}
     st.markdown(
-        f"**綜合評分 ＝ 下列九大因子加權（占比如下）**　"
+        f"**綜合評分 ＝ 下列{len(_FACTOR_DISPLAY)}大因子加權（占比如下）**　"
         f"已依「統計期間」自動切換為 **{_HORIZON_LABEL[reco_horizon]}** 權重"
     )
     _fcols = st.columns(len(_FACTOR_DISPLAY))
@@ -771,12 +774,15 @@ def _render_buy_sell_section(
         recommend.add_price_targets(sell_df, "sell", currency, hold_days,
                                     horizon=reco_horizon, aggressiveness=reco_aggr), "sell")
 
-    _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)"]
+    # 殖利率% is a raw fraction (e.g. 0.0523) like 期間報酬率/趨勢, not a
+    # pre-z-scored composite — shown as an actual percentage since "看實際
+    # 殖利率高低" is the point, a z-score wouldn't be legible here.
+    _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)", "殖利率%"]
     # 基本面/技術面/籌碼/配息穩定性 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
     _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                    "配息穩定性", "RSI (14)", "綜合評分"]
     _PRICE_COLS = ["建議買入價", "建議賣出價"]
-    _COL_ORDER = ["建議", "綜合評分", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
+    _COL_ORDER = ["建議", "綜合評分", "殖利率%", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
                   "估值(1/預估PE)", "基本面", "籌碼", "配息穩定性", "新聞情緒", "RSI (14)",
                   "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
 
