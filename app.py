@@ -745,6 +745,12 @@ def _render_buy_sell_section(
             | set(universe.get_nasdaq100_tickers()) | set(universe.get_dow_tickers())
         )
 
+    # 填息率 only exists for tickers that passed the screen — kept here (not
+    # as a separate table) so it merges straight into the same buy/sell
+    # table below instead of duplicating the screened list in its own
+    # expander (the buy/sell list is already a scored subset of exactly
+    # these tickers once the screen is on, so showing both was redundant).
+    fill_rate_by_ticker = None
     if dividend_screen:
         with st.spinner(f"正在計算 {len(reco_universe)} 檔標的的殖利率／填息率…"):
             screen_df = recommend.dividend_fill_screen(
@@ -752,21 +758,19 @@ def _render_buy_sell_section(
         if screen_df.empty:
             st.warning("目前範圍內沒有足夠的配息資料可供篩選，已停用此篩選、改用完整候選範圍。")
         else:
-            with st.expander(
-                f"配息殖利率前{dividend_top_yield}高 ∩ 填息率前{dividend_top_fill}高："
-                f"{len(screen_df)} 檔標的（點開查看）"
-            ):
-                disp = screen_df.copy()
-                disp["殖利率"] = (disp["殖利率"] * 100).map(lambda v: f"{v:.2f}%")
-                disp["填息率"] = (disp["填息率"] * 100).map(lambda v: f"{v:.0f}%")
-                disp.index = [_display_name(t) for t in disp["代號"]]
-                st.dataframe(disp.drop(columns="代號"), use_container_width=True)
+            st.caption(
+                f"已套用篩選：配息殖利率前{dividend_top_yield}高 ∩ 填息率前{dividend_top_fill}高，"
+                f"共 {len(screen_df)} 檔標的進入候選範圍（填息率會顯示在下方表格的「填息率」欄）。"
+            )
+            fill_rate_by_ticker = screen_df.set_index("代號")["填息率"]
             reco_universe = screen_df["代號"].tolist()
 
     with st.spinner(f"正在掃描 {len(reco_universe)} 檔標的計算評分，資料量較大可能需要數分鐘…"):
         reco_table = recommend.build_recommendation_table(
             reco_universe, period, DEFAULT_RISK_FREE_RATE,
             lookback_days=reco_lookback, weights=reco_weights, horizon=reco_horizon)
+    if fill_rate_by_ticker is not None and not reco_table.empty:
+        reco_table["填息率"] = reco_table.index.map(fill_rate_by_ticker)
     if reco_table.empty:
         st.warning("無足夠資料產生建議，請確認統計期間。")
         return
@@ -796,19 +800,22 @@ def _render_buy_sell_section(
     # 殖利率% is a raw fraction (e.g. 0.0523) like 期間報酬率/趨勢, not a
     # pre-z-scored composite — shown as an actual percentage since "看實際
     # 殖利率高低" is the point, a z-score wouldn't be legible here.
-    _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)", "殖利率%"]
+    # 填息率 only exists when the 殖利率+填息率篩選 was on (see fill_rate_by_ticker
+    # above) — _format_reco/_column_config below guard for its absence.
+    _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)", "殖利率%", "填息率"]
     # 基本面/技術面/籌碼/配息穩定性 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
     _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                    "配息穩定性", "RSI (14)", "綜合評分"]
     _PRICE_COLS = ["建議買入價", "建議賣出價"]
-    _COL_ORDER = ["建議", "綜合評分", "殖利率%", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
+    _COL_ORDER = ["建議", "綜合評分", "殖利率%", "填息率", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
                   "估值(1/預估PE)", "基本面", "籌碼", "配息穩定性", "新聞情緒", "RSI (14)",
                   "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
 
     def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
         fmt = df.copy()
         for col in _PCT_COLS:
-            fmt[col] = fmt[col] * 100
+            if col in fmt:
+                fmt[col] = fmt[col] * 100
         fmt.index = [_display_name(t) for t in fmt.index]
         return fmt
 
