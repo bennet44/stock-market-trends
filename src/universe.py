@@ -143,12 +143,14 @@ _TWSE_ISIN_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
-def get_twse_etf_tickers() -> list[str]:
-    """Live list of every TWSE-listed ETF, scraped from TWSE's full
-    securities-by-ISIN page. The curated _TW_ETF_TICKERS fallback above
-    predates most actively-managed ETFs (00xxxA-style codes) and isn't
-    maintained by hand, so this is what get_twse_tickers() actually uses;
-    the curated list only kicks in if this fetch/parse fails outright.
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _fetch_twse_etf_rows() -> list[tuple[str, str]] | None:
+    """(code, Chinese name) for every TWSE-listed ETF, parsed from the same
+    ISIN page get_twse_etf_tickers/get_twse_etf_names both build on. Returns
+    None on any fetch/parse failure or a too-thin result (TWSE has had 150+
+    listed ETFs for years, so a thin parse means the page layout changed,
+    not that ETFs were delisted) — callers fall back to their own curated
+    data in that case.
     """
     try:
         req = urllib.request.Request(_TWSE_ISIN_URL, headers=_TWSE_ISIN_HEADERS)
@@ -157,16 +159,36 @@ def get_twse_etf_tickers() -> list[str]:
         section_starts = {m.group(1).strip(): m.start() for m in re.finditer(r"<B>\s*([^<]+?)\s*<B>", html)}
         etf_start, etn_start = section_starts.get("ETF"), section_starts.get("ETN")
         if etf_start is None or etn_start is None or etn_start <= etf_start:
-            return _TW_ETF_TICKERS
+            return None
         section = html[etf_start:etn_start]
-        codes = re.findall(r"<td bgcolor=#FAFAD2>(\d{4,6}[A-Z]?)[^<]*</td><td bgcolor=#FAFAD2>TW", section)
-        tickers = sorted({f"{c}.TW" for c in codes})
-        # Sanity floor: TWSE has had 150+ listed ETFs for years, so a parse
-        # that comes back thin almost certainly means the page layout
-        # changed underneath this regex, not that ETFs were delisted.
-        return tickers if len(tickers) >= 100 else _TW_ETF_TICKERS
+        rows = re.findall(r"<td bgcolor=#FAFAD2>(\d{4,6}[A-Z]?)\s*([^<]*?)</td><td bgcolor=#FAFAD2>TW", section)
+        return rows if len(rows) >= 100 else None
     except Exception:
+        return None
+
+
+def get_twse_etf_tickers() -> list[str]:
+    """Live list of every TWSE-listed ETF, scraped from TWSE's full
+    securities-by-ISIN page. The curated _TW_ETF_TICKERS fallback above
+    predates most actively-managed ETFs (00xxxA-style codes) and isn't
+    maintained by hand, so this is what get_twse_tickers() actually uses;
+    the curated list only kicks in if this fetch/parse fails outright.
+    """
+    rows = _fetch_twse_etf_rows()
+    if rows is None:
         return _TW_ETF_TICKERS
+    return sorted({f"{code}.TW" for code, _ in rows})
+
+
+def get_twse_etf_names() -> dict[str, str]:
+    """{bare code: Chinese name} for every TWSE-listed ETF, from the same
+    ISIN page scrape as get_twse_etf_tickers — fills the gap left by
+    get_twse_company_names(), which only covers 公司 (companies), not ETFs
+    (funds), so ETF codes outside the small curated _TW_NAMES list used to
+    fall back to yfinance's English shortName. Returns {} on fetch failure.
+    """
+    rows = _fetch_twse_etf_rows()
+    return {code: name for code, name in rows} if rows else {}
 
 # Traditional-Chinese names for the curated codes above. Yahoo Finance's
 # "shortName" for TWSE tickers comes back in English (e.g. "Taiwan
@@ -194,13 +216,18 @@ _TW_NAMES = {
 
 
 def get_tw_company_name(ticker: str) -> str | None:
-    """Chinese name for a TW code. Prefers the small curated list (covers ETFs
-    and stays stable offline), then falls back to the full TWSE 上市公司 name
-    map so any TWSE-listed stock — not just the curated watchlist — gets a
-    Chinese name for its header and zh-TW news query. None if unknown (e.g. an
-    OTC/.TWO code, or offline with nothing curated)."""
+    """Chinese name for a TW code. Prefers the small curated list (stays
+    stable offline), then the full TWSE 上市公司 name map (covers individual
+    stocks generally, but not ETFs — funds aren't "公司"), then the ETF-name
+    scrape (covers ETFs specifically, including 00xxxA-style actively-managed
+    ones). None if unknown (e.g. an OTC/.TWO code, or offline with nothing
+    curated)."""
     code = ticker.split(".")[0]
-    return _TW_NAMES.get(code) or dl.get_twse_company_names().get(code)
+    return (
+        _TW_NAMES.get(code)
+        or dl.get_twse_company_names().get(code)
+        or get_twse_etf_names().get(code)
+    )
 
 
 def get_twse_tickers() -> list[str]:
