@@ -143,19 +143,24 @@ FCN_N_SIMS = 8000
 FCN_MAX_ASSETS = 5
 
 def _display_name(ticker: str) -> str:
-    """Return "TICKER(公司名稱)", falling back to the bare ticker if the
-    name is unavailable (e.g. offline or an unrecognized symbol).
+    """Return "代碼(公司名稱)", falling back to the bare ticker if the name
+    is unavailable (e.g. offline or an unrecognized symbol).
 
-    TW tickers use the curated Chinese name (Yahoo's "shortName" for TWSE
-    tickers comes back in English); US tickers keep the English shortName.
+    TW tickers show the bare numeric code (no ".TW"/".TWO" suffix — that
+    suffix is a Yahoo Finance implementation detail, not how 台股 codes are
+    normally written/read) paired with the curated Chinese name (Yahoo's
+    "shortName" for TWSE tickers comes back in English). US tickers keep
+    the ticker as-is with the English shortName.
     """
-    name = universe.get_tw_company_name(ticker) if ticker.endswith((".TW", ".TWO")) else None
+    is_tw_ticker = ticker.endswith((".TW", ".TWO"))
+    name = universe.get_tw_company_name(ticker) if is_tw_ticker else None
     if not name:
         info = dl.get_company_info(ticker)
         # Fall back to longName when shortName is missing so US tickers show
         # "代碼(公司名稱)" as consistently as TW does (TW uses a curated dict).
         name = info.get("shortName") or info.get("longName")
-    return f"{ticker}({name})" if name else ticker
+    code = ticker.split(".")[0] if is_tw_ticker else ticker
+    return f"{code}({name})" if name else code
 
 
 def _signal_rgb(side: str, frac: float) -> str:
