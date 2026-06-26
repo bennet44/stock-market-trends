@@ -64,7 +64,7 @@ _SETTINGS_STORAGE_KEY = "dashboard_settings"
 # already flipped can end up typing a US ticker into the TW-labeled field
 # (or vice versa) and seeing the wrong stock. Every other tab's
 # settings/inputs are still remembered.
-_PERSIST_EXCLUDE_KEYS = {"market"}
+_PERSIST_EXCLUDE_KEYS = {"market", "market_confirmed"}
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
 try:
@@ -198,7 +198,26 @@ def _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drifts, corr, risk_
     )
 
 
-market = st.radio("市場", ["美股", "台股"], horizontal=True, key="market")
+# No default selection and a 確定 button: the picker no longer auto-resolves
+# to a market on load (this used to default to 美股) — the user must
+# actively pick 台股／美股 and press 確定 before any data fetch/query runs,
+# same spirit as excluding "market" from the localStorage round-trip below
+# (avoid ever silently landing on a market the user didn't choose this visit).
+_col_market, _col_confirm = st.columns([4, 1])
+with _col_market:
+    _market_choice = st.radio(
+        "市場", ["美股", "台股"], index=None, horizontal=True, key="market",
+        label_visibility="collapsed",
+    )
+with _col_confirm:
+    if st.button("確定", use_container_width=True) and _market_choice is not None:
+        st.session_state["market_confirmed"] = _market_choice
+
+if "market_confirmed" not in st.session_state:
+    st.info("請先選擇市場（美股／台股），再按「確定」開始查詢。")
+    st.stop()
+
+market = st.session_state["market_confirmed"]
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
 
