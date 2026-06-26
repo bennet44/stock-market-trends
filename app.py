@@ -605,6 +605,29 @@ def _render_buy_sell_section(
         top_n = st.selectbox(
             "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
         )
+        # 買/賣 are mutually exclusive (checking one unchecks the other) rather
+        # than independent checkboxes, so the table always shows exactly one
+        # side — 買 checked by default. Enforced via on_change since Streamlit
+        # checkboxes don't support radio-style grouping natively.
+        _buy_key = f"show_buy_{tab_key}_{'tw' if is_tw else 'us'}"
+        _sell_key = f"show_sell_{tab_key}_{'tw' if is_tw else 'us'}"
+        if _buy_key not in st.session_state and _sell_key not in st.session_state:
+            st.session_state[_buy_key] = True
+            st.session_state[_sell_key] = False
+
+        def _on_buy_toggle():
+            # on_change fires after st.session_state[_buy_key] already holds
+            # the new (post-click) value.
+            st.session_state[_sell_key] = not st.session_state[_buy_key]
+
+        def _on_sell_toggle():
+            st.session_state[_buy_key] = not st.session_state[_sell_key]
+
+        _cb_buy, _cb_sell = st.columns(2)
+        with _cb_buy:
+            show_buy = st.checkbox("買", key=_buy_key, on_change=_on_buy_toggle)
+        with _cb_sell:
+            show_sell = st.checkbox("賣", key=_sell_key, on_change=_on_sell_toggle)
     with col_hold:
         hold_keys = list(hold_options.keys()) + ([_HOLD_CUSTOM_LABEL] if allow_zhu_gate else [])
         hold_label = st.selectbox(
@@ -734,6 +757,13 @@ def _render_buy_sell_section(
     # are all >15 天 (allow_zhu_gate=False), so this never fires there.
     _zhu_gate = "_zhu_signal" if (allow_zhu_gate and hold_days <= 5) else None
     buy_df, sell_df = recommend.top_buy_sell(reco_table, top_n, require_signal_col=_zhu_gate)
+    # 買/賣 checkboxes (mutually exclusive, 買 default) decide which side is
+    # actually displayed — empty out whichever side is unchecked before the
+    # (otherwise unchanged) price-target/reason/merge pipeline below.
+    if not show_buy:
+        buy_df = buy_df.iloc[0:0]
+    if not show_sell:
+        sell_df = sell_df.iloc[0:0]
     buy_df = recommend.add_reason(
         recommend.add_price_targets(buy_df, "buy", currency, hold_days,
                                     horizon=reco_horizon, aggressiveness=reco_aggr), "buy")
@@ -816,7 +846,7 @@ def _render_buy_sell_section(
         use_container_width=True, column_config=_column_config(merged),
     )
 
-    if len(buy_df) < top_n:
+    if show_buy and len(buy_df) < top_n:
         if _zhu_gate:
             st.info(
                 f"買入清單僅 {len(buy_df)} 檔（非選擇的 Top {top_n}）：持有 {hold_display} 採用"
