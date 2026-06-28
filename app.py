@@ -67,7 +67,10 @@ _SETTINGS_STORAGE_KEY = "dashboard_settings"
 _PERSIST_EXCLUDE_KEYS = {"market"}
 # 買/賣切換刻意不持久化：每次開啟都回到「買」預設（_render_buy_sell_section
 # 在這兩個 key 不存在時會把買=True/賣=False），同一 session 內仍可自由切換。
-_PERSIST_EXCLUDE_PREFIXES = ("show_buy_", "show_sell_")
+# reco_confirmed_/price_confirmed_ 是各分頁「確定」鈕的閘門旗標（含 _missing
+# 提示狀態），也刻意不持久化——否則一旦按過確定，旗標會被存進 localStorage，
+# 下次開啟就略過閘門、自動跑掉昂貴的掃描，違背「按確定才查詢」的設計。
+_PERSIST_EXCLUDE_PREFIXES = ("show_buy_", "show_sell_", "reco_confirmed_", "price_confirmed_")
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
 try:
