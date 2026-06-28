@@ -208,7 +208,7 @@ def _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drifts, corr, risk_
 # actively pick 台股／美股 and press 確定 before any data fetch/query runs,
 # same spirit as excluding "market" from the localStorage round-trip below
 # (avoid ever silently landing on a market the user didn't choose this visit).
-_col_market, _col_confirm = st.columns([4, 1])
+_col_market, _col_confirm, _col_spacer = st.columns([2, 1, 5], gap="small")
 with _col_market:
     _market_choice = st.radio(
         "市場", ["美股", "台股"], index=None, horizontal=True, key="market",
