@@ -48,10 +48,6 @@ st.markdown(
       div[role="radiogroup"] { gap: .4rem; }
       h3 { margin-top: .3rem; letter-spacing: .2px; }
       hr { margin: 1.1rem 0; border-color: #232b38; }
-      /* 市場確定鈕縮小20%（改用padding/字體縮小，避免transform造成文字置中跑掉） */
-      div.st-key-confirm_btn_wrap button {
-        padding-top: .192rem; padding-bottom: .192rem; font-size: .8rem; min-height: 0;
-      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -68,7 +64,7 @@ _SETTINGS_STORAGE_KEY = "dashboard_settings"
 # already flipped can end up typing a US ticker into the TW-labeled field
 # (or vice versa) and seeing the wrong stock. Every other tab's
 # settings/inputs are still remembered.
-_PERSIST_EXCLUDE_KEYS = {"market", "market_confirmed"}
+_PERSIST_EXCLUDE_KEYS = {"market"}
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
 try:
@@ -207,27 +203,17 @@ def _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drifts, corr, risk_
     )
 
 
-# No default selection and a 確定 button: the picker no longer auto-resolves
-# to a market on load (this used to default to 美股) — the user must
-# actively pick 台股／美股 and press 確定 before any data fetch/query runs,
-# same spirit as excluding "market" from the localStorage round-trip below
-# (avoid ever silently landing on a market the user didn't choose this visit).
-_col_market, _col_confirm, _col_spacer = st.columns([2, 1, 5], gap="small")
-with _col_market:
-    _market_choice = st.radio(
-        "市場", ["美股", "台股"], index=None, horizontal=True, key="market",
-        label_visibility="collapsed",
-    )
-with _col_confirm:
-    with st.container(key="confirm_btn_wrap"):
-        if st.button("確定", use_container_width=True) and _market_choice is not None:
-            st.session_state["market_confirmed"] = _market_choice
-
-if "market_confirmed" not in st.session_state:
-    st.info("請先選擇市場（美股／台股），再按「確定」開始查詢。")
+# No default selection: the picker no longer auto-resolves to a market on
+# load (this used to default to 美股) — the user must actively pick
+# 台股／美股, same spirit as excluding "market" from the localStorage
+# round-trip below (avoid ever silently landing on a market the user didn't
+# choose this visit). Each tab below gates its own query behind its own
+# 確定 button instead of one global gate, so picking a market alone no
+# longer blocks the whole page.
+market = st.radio("市場", ["美股", "台股"], index=None, horizontal=True, key="market")
+if market is None:
+    st.info("請先選擇市場（美股／台股）。")
     st.stop()
-
-market = st.session_state["market_confirmed"]
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
 
@@ -237,7 +223,7 @@ tab_overview, tab_reco, tab_compare_risk, tab_stock_hold, tab_fcn = st.tabs(
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
 with tab_overview:
-    col_ticker, col_period = st.columns([2, 1])
+    col_ticker, col_period, col_confirm1 = st.columns([2, 1, 1])
     with col_ticker:
         if is_tw:
             default_ticker = "2330"
@@ -252,255 +238,269 @@ with tab_overview:
         # desync the box from the header below. Instead seed the widget once
         # from a plain (never-GC'd) shadow key — no value= arg, no conflict —
         # so the field (and the header derived from it) stay consistent across
-        # 台股⇄美股 switches and remember each market's last input.
+        # 台股⇄美股 切換時 still remember each market's last input.
         _pt_key = f"price_ticker_{'tw' if is_tw else 'us'}"
         _pt_shadow = f"price_ticker_value_{'tw' if is_tw else 'us'}"
         if _pt_key not in st.session_state:
             st.session_state[_pt_key] = st.session_state.get(_pt_shadow) or default_ticker
         raw_primary = st.text_input(ticker_label, key=_pt_key).strip().upper() or default_ticker
         st.session_state[_pt_shadow] = raw_primary
-        primary = universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary
     with col_period:
         period_label = st.selectbox(
             "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab1_{'tw' if is_tw else 'us'}"
         )
-    period = PERIOD_OPTIONS[period_label]
-    primary_label = _display_name(primary)
-    # Plain markdown heading rather than st.subheader: the heading component
-    # auto-generates an anchor id from its text and can fail to update the
-    # rendered text on rerun (leaving a stale ticker like "TSLA" in the header
-    # while the box/chart already show "AAPL"). Markdown has no such anchor.
-    st.markdown(f"### {primary_label} 價格與技術指標")
-    df = dl.get_price_history(primary, period=period)
-    if df.empty:
-        st.error(f"找不到 {primary} 的資料，請確認代號是否正確。")
+    with col_confirm1:
+        st.write("")
+        # 股票代號與時間範圍都先暫存在 widget 裡，按下確定才把這一刻的值定格存進
+        # session_state 並往下查詢/畫圖 — 避免每次打字/選單變動就立刻重新抓資料。
+        _p1_confirm_key = f"price_confirmed_{'tw' if is_tw else 'us'}"
+        if st.button("確定", key=f"price_confirm_btn_{'tw' if is_tw else 'us'}", use_container_width=True):
+            st.session_state[_p1_confirm_key] = {
+                "ticker": universe.resolve_tw_ticker(raw_primary) if is_tw else raw_primary,
+                "period": PERIOD_OPTIONS[period_label],
+            }
+
+    if _p1_confirm_key not in st.session_state:
+        st.info("請輸入股票代號與時間範圍，再按「確定」開始查詢。")
     else:
-        close = df["Close"]
-        sma5, sma10, sma20 = ta.sma(close, 5), ta.sma(close, 10), ta.sma(close, 20)
-        bb = ta.bollinger_bands(close)
-
-        st.caption("提示：將滑鼠移到圖上（手機點一下 K 棒）即可看到當天開盤／最高／最低／收盤價，不需開啟下方分析模式。")
-        analysis_mode = st.checkbox(
-            "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
-            key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
-        )
-
-        # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the reverse of
-        # the US green-up/red-down convention). Chart background follows the dark
-        # Plotly template (pio.templates.default) set at startup.
-        up_color, down_color = ("#ff3333", "#00b300") if is_tw else ("#26c281", "#ff5b5b")
-        legend_top = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
-
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-            name=primary_label,
-            increasing_line_color=up_color, increasing_fillcolor=up_color,
-            decreasing_line_color=down_color, decreasing_fillcolor=down_color,
-        ))
-        fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
-        fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
-        fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
-        fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="Bollinger Upper",
-                                  line=dict(width=1, dash="dot"), opacity=0.5))
-        fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="Bollinger Lower",
-                                  line=dict(width=1, dash="dot"), opacity=0.5))
-        fig.update_layout(height=600, xaxis_rangeslider_visible=False,
-                           margin=dict(t=80, b=20), legend=legend_top)
-        _render_chart(fig, analysis_mode)
-
-        vol_colors = [
-            up_color if c >= o else down_color
-            for o, c in zip(df["Open"], df["Close"])
-        ]
-        vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume", marker_color=vol_colors))
-        vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
-        _render_chart(vol_fig, analysis_mode)
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            rsi_series = ta.rsi(close)
-            rsi_fig = go.Figure(go.Scatter(x=df.index, y=rsi_series, name="RSI"))
-            rsi_fig.add_hline(y=70, line_dash="dash", line_color="red")
-            rsi_fig.add_hline(y=30, line_dash="dash", line_color="green")
-            rsi_fig.update_layout(height=250, title="RSI (14)", margin=dict(t=30, b=10))
-            _render_chart(rsi_fig, analysis_mode)
-        with col2:
-            macd_df = ta.macd(close)
-            macd_fig = go.Figure()
-            macd_fig.add_trace(go.Scatter(x=df.index, y=macd_df["macd"], name="MACD"))
-            macd_fig.add_trace(go.Scatter(x=df.index, y=macd_df["signal"], name="Signal"))
-            macd_fig.add_trace(go.Bar(x=df.index, y=macd_df["hist"], name="Histogram"))
-            macd_fig.update_layout(height=250, title="MACD", margin=dict(t=30, b=10))
-            _render_chart(macd_fig, analysis_mode)
-        with col3:
-            kd_df = ta.kd(df["High"], df["Low"], close)
-            kd_fig = go.Figure()
-            kd_fig.add_trace(go.Scatter(x=df.index, y=kd_df["k"], name="K"))
-            kd_fig.add_trace(go.Scatter(x=df.index, y=kd_df["d"], name="D"))
-            kd_fig.add_hline(y=80, line_dash="dash", line_color="red")
-            kd_fig.add_hline(y=20, line_dash="dash", line_color="green")
-            kd_fig.update_layout(height=250, title="KD (9)", margin=dict(t=30, b=10))
-            _render_chart(kd_fig, analysis_mode)
-
-        latest = close.iloc[-1]
-        prev = close.iloc[-2] if len(close) > 1 else latest
-        st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
-                   f"{(latest / prev - 1) * 100:.2f}%")
-
-        # ETF: list constituent holdings (capped — a holdings table with
-        # dozens/hundreds of rows, e.g. a bond ETF, would blow out the page
-        # layout, so it's only shown when it's a short, glanceable list).
-        _info_primary = dl.get_company_info(primary)
-        if _info_primary.get("quoteType") == "ETF":
-            holdings = dl.get_etf_top_holdings(primary)
-            if not holdings.empty and len(holdings) <= 15:
-                st.markdown("##### 成份股")
-                hdf = holdings.reset_index()
-                hdf.columns = ["代號", "名稱", "權重"]
-                hdf["權重"] = (hdf["權重"] * 100).map(lambda v: f"{v:.2f}%")
-                st.dataframe(hdf, use_container_width=True, hide_index=True)
-
-        st.markdown("##### 建議買入／賣出價格參考")
-        col_h1, col_a1 = st.columns(2)
-        with col_h1:
-            # Same 持有天數 options as the 買賣建議 tab (RECO_HOLD_OPTIONS + 自訂).
-            _pt_hold_key = f"price_target_horizon_{'tw' if is_tw else 'us'}"
-            _pt_hold_opts = list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL]
-            # Drop a stale persisted value from the old option set so the
-            # selectbox doesn't raise "default value not in options".
-            if st.session_state.get(_pt_hold_key) not in _pt_hold_opts:
-                st.session_state.pop(_pt_hold_key, None)
-            hold_label1 = st.selectbox(
-                "持有天數(今日算起)", _pt_hold_opts, index=0, key=_pt_hold_key,
-            )
-            if hold_label1 == _HOLD_CUSTOM_LABEL:
-                hold_days = int(st.number_input(
-                    "自訂持有天數（交易日）", min_value=1, max_value=1260, value=5, step=1,
-                    key=f"price_target_hold_custom_{'tw' if is_tw else 'us'}",
-                ))
-                hold_disp1 = f"{hold_days} 個交易日"
-            else:
-                hold_days = RECO_HOLD_OPTIONS[hold_label1]
-                hold_disp1 = hold_label1 if hold_label1 == f"{hold_days}天" else f"{hold_label1}（{hold_days} 交易日）"
-        with col_a1:
-            aggr_label = st.selectbox(
-                "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
-                key=f"price_target_aggr_{'tw' if is_tw else 'us'}",
-                help="保守＝目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
-            )
-        aggr_pct = RECO_AGGRESSIVENESS[aggr_label]
-        query_date = dt.date.today()
-        target_date = query_date + dt.timedelta(days=round(hold_days * 7 / 5))  # trading→calendar
-        st.caption(
-            "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
-            "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
-            "預測準確機率＝路徑式回測（持有期內最高/最低觸及的實測比例）。"
-            f"依過去 1 年、持有 {hold_disp1} 估算，"
-            f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
-            f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
-        )
-        # Same logic as the 買賣建議 tab (median move pricing, technical nudge,
-        # path-based touch rate), but on a fixed 1-year window, so 統計期間皆是 1 年.
-        pt = dl.get_price_history(primary, period="1y")
-        if pt.empty:
-            pt = df  # chart data (non-empty here) as a safety net
-        pt_close, pt_high, pt_low = pt["Close"], pt["High"], pt["Low"]
-        fwd_returns = pt_close.pct_change(periods=hold_days).dropna()
-        ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
-        up_move = float(np.percentile(ups, aggr_pct)) if not ups.empty else None
-        down_move = float(np.percentile(downs, 100 - aggr_pct)) if not downs.empty else None
-        # Technical nudge (布林/SMA多頭/型態 + 動能), same as the 買賣建議 formula.
-        _bias = recommend.technical_bias(pt_close, pt_high, pt_low,
-                                         recommend.horizon_for_hold_days(hold_days))
-        if up_move is not None:
-            up_move *= (1 + recommend.TECH_BIAS_BETA * _bias)
-        if down_move is not None:
-            down_move *= (1 - recommend.TECH_BIAS_BETA * _bias)
-
-        col_buy, col_sell = st.columns(2)
-        with col_buy:
-            if down_move is not None:
-                acc = recommend.forward_touch_rate(pt_close, pt_low, hold_days, down_move, "down")
-                st.metric("建議買入價（逢低承接）", f"{currency}{latest * (1 + down_move):,.2f}",
-                           f"{down_move * 100:.2f}%")
-                st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最低觸及此買入價的比例約 "
-                           f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
-            else:
-                st.metric("建議買入價（逢低承接）", "資料不足")
-        with col_sell:
-            if up_move is not None:
-                acc = recommend.forward_touch_rate(pt_close, pt_high, hold_days, up_move, "up")
-                st.metric("建議賣出價（目標停利）", f"{currency}{latest * (1 + up_move):,.2f}",
-                           f"{up_move * 100:.2f}%")
-                st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最高觸及此賣出價的比例約 "
-                           f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
-            else:
-                st.metric("建議賣出價（目標停利）", "資料不足")
-
-    st.divider()
-    st.markdown(f"### {primary_label} 基本財務面與技術分析簡述")
-    fdf = dl.get_fundamentals_table([primary])
-    if fdf.empty:
-        st.warning("無法取得基本面資料。")
-    else:
-        display = fdf.copy()
-        if "市值" in display:
-            display["市值"] = display["市值"].apply(
-                lambda v: f"{currency}{v / 1e9:,.1f}B" if pd.notnull(v) else None)
-        for pct_col in ["營收成長率", "盈餘成長率", "淨利率", "ROE", "股息率"]:
-            if pct_col in display:
-                display[pct_col] = display[pct_col].apply(
-                    lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
-        st.dataframe(display, use_container_width=True)
-
-    if not df.empty:
-        st.markdown("##### 技術分析")
-        tech_df, tech_conclusion = recommend.technical_analysis_brief(
-            close, df["High"], df["Low"], recommend.horizon_for_hold_days(hold_days))
-        if tech_df.empty:
-            st.info("資料不足，無法計算技術指標。")
+        primary = st.session_state[_p1_confirm_key]["ticker"]
+        period = st.session_state[_p1_confirm_key]["period"]
+        primary_label = _display_name(primary)
+        # Plain markdown heading rather than st.subheader: the heading component
+        # auto-generates an anchor id from its text and can fail to update the
+        # rendered text on rerun (leaving a stale ticker like "TSLA" in the header
+        # while the box/chart already show "AAPL"). Markdown has no such anchor.
+        st.markdown(f"### {primary_label} 價格與技術指標")
+        df = dl.get_price_history(primary, period=period)
+        if df.empty:
+            st.error(f"找不到 {primary} 的資料，請確認代號是否正確。")
         else:
-            st.dataframe(tech_df, use_container_width=True, hide_index=True)
-            st.caption(f"建議說明：{tech_conclusion}")
+            close = df["Close"]
+            sma5, sma10, sma20 = ta.sma(close, 5), ta.sma(close, 10), ta.sma(close, 20)
+            bb = ta.bollinger_bands(close)
 
-    st.divider()
-    news_date_label = news.recent_news_date_label()
-    st.markdown(f"### {primary_label} 相關新聞（{news_date_label}）")
-    # TW tickers: prefer the curated Chinese name for the news query — yfinance's
-    # "shortName" comes back in English for TWSE tickers (see _display_name),
-    # and an English company name paired with a zh-TW Google News search
-    # routinely returns zero matches.
-    company_name = universe.get_tw_company_name(primary) if is_tw else None
-    if not company_name:
-        company_name = (
-            fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
-        )
-    # US tickers: zh-TW Google News rarely indexes small/mid-cap US names
-    # (e.g. OKLO), so lead with a broad English-language search instead and
-    # only fall back to the zh-TW search if that's empty. TW tickers keep
-    # the zh-TW search as primary.
-    if is_tw:
-        news_items = news.get_recent_news(primary, company_name)
-        extra_news = news.get_twse_news(primary, company_name) + news.get_mops_news(primary, company_name)
-    else:
-        news_items = news.get_recent_news_en(primary, company_name) or news.get_recent_news(primary, company_name)
-        extra_news = news.get_reuters_news(primary, company_name) + news.get_sec_filings(primary)
-    news_items = sorted(news_items + extra_news, key=lambda n: n["published"], reverse=True)
-    if not news_items:
-        st.info(f"暫無 {news_date_label} 的相關新聞。")
-    else:
-        for n in news_items:
-            published_str = n["published"].strftime("%Y-%m-%d %H:%M UTC")
-            # US headlines come back in English; show a best-effort zh-TW
-            # translation alongside the original (machine translation, may
-            # be imperfect — original title links through for verification).
-            title = n["title"]
-            if not is_tw:
-                translated = news.translate_to_zh_tw(title)
-                if translated and translated != title:
-                    title = f"{translated}（{title}）"
-            st.markdown(f"- [{title}]({n['link']})　_{n['source']}｜{published_str}_")
+            st.caption("提示：將滑鼠移到圖上（手機點一下 K 棒）即可看到當天開盤／最高／最低／收盤價，不需開啟下方分析模式。")
+            analysis_mode = st.checkbox(
+                "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
+                key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
+            )
+
+            # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the reverse of
+            # the US green-up/red-down convention). Chart background follows the dark
+            # Plotly template (pio.templates.default) set at startup.
+            up_color, down_color = ("#ff3333", "#00b300") if is_tw else ("#26c281", "#ff5b5b")
+            legend_top = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+                name=primary_label,
+                increasing_line_color=up_color, increasing_fillcolor=up_color,
+                decreasing_line_color=down_color, decreasing_fillcolor=down_color,
+            ))
+            fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
+            fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
+            fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
+            fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="Bollinger Upper",
+                                      line=dict(width=1, dash="dot"), opacity=0.5))
+            fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="Bollinger Lower",
+                                      line=dict(width=1, dash="dot"), opacity=0.5))
+            fig.update_layout(height=600, xaxis_rangeslider_visible=False,
+                               margin=dict(t=80, b=20), legend=legend_top)
+            _render_chart(fig, analysis_mode)
+
+            vol_colors = [
+                up_color if c >= o else down_color
+                for o, c in zip(df["Open"], df["Close"])
+            ]
+            vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume", marker_color=vol_colors))
+            vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
+            _render_chart(vol_fig, analysis_mode)
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                rsi_series = ta.rsi(close)
+                rsi_fig = go.Figure(go.Scatter(x=df.index, y=rsi_series, name="RSI"))
+                rsi_fig.add_hline(y=70, line_dash="dash", line_color="red")
+                rsi_fig.add_hline(y=30, line_dash="dash", line_color="green")
+                rsi_fig.update_layout(height=250, title="RSI (14)", margin=dict(t=30, b=10))
+                _render_chart(rsi_fig, analysis_mode)
+            with col2:
+                macd_df = ta.macd(close)
+                macd_fig = go.Figure()
+                macd_fig.add_trace(go.Scatter(x=df.index, y=macd_df["macd"], name="MACD"))
+                macd_fig.add_trace(go.Scatter(x=df.index, y=macd_df["signal"], name="Signal"))
+                macd_fig.add_trace(go.Bar(x=df.index, y=macd_df["hist"], name="Histogram"))
+                macd_fig.update_layout(height=250, title="MACD", margin=dict(t=30, b=10))
+                _render_chart(macd_fig, analysis_mode)
+            with col3:
+                kd_df = ta.kd(df["High"], df["Low"], close)
+                kd_fig = go.Figure()
+                kd_fig.add_trace(go.Scatter(x=df.index, y=kd_df["k"], name="K"))
+                kd_fig.add_trace(go.Scatter(x=df.index, y=kd_df["d"], name="D"))
+                kd_fig.add_hline(y=80, line_dash="dash", line_color="red")
+                kd_fig.add_hline(y=20, line_dash="dash", line_color="green")
+                kd_fig.update_layout(height=250, title="KD (9)", margin=dict(t=30, b=10))
+                _render_chart(kd_fig, analysis_mode)
+
+            latest = close.iloc[-1]
+            prev = close.iloc[-2] if len(close) > 1 else latest
+            st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
+                       f"{(latest / prev - 1) * 100:.2f}%")
+
+            # ETF: list constituent holdings (capped — a holdings table with
+            # dozens/hundreds of rows, e.g. a bond ETF, would blow out the page
+            # layout, so it's only shown when it's a short, glanceable list).
+            _info_primary = dl.get_company_info(primary)
+            if _info_primary.get("quoteType") == "ETF":
+                holdings = dl.get_etf_top_holdings(primary)
+                if not holdings.empty and len(holdings) <= 15:
+                    st.markdown("##### 成份股")
+                    hdf = holdings.reset_index()
+                    hdf.columns = ["代號", "名稱", "權重"]
+                    hdf["權重"] = (hdf["權重"] * 100).map(lambda v: f"{v:.2f}%")
+                    st.dataframe(hdf, use_container_width=True, hide_index=True)
+
+            st.markdown("##### 建議買入／賣出價格參考")
+            col_h1, col_a1 = st.columns(2)
+            with col_h1:
+                # Same 持有天數 options as the 買賣建議 tab (RECO_HOLD_OPTIONS + 自訂).
+                _pt_hold_key = f"price_target_horizon_{'tw' if is_tw else 'us'}"
+                _pt_hold_opts = list(RECO_HOLD_OPTIONS.keys()) + [_HOLD_CUSTOM_LABEL]
+                # Drop a stale persisted value from the old option set so the
+                # selectbox doesn't raise "default value not in options".
+                if st.session_state.get(_pt_hold_key) not in _pt_hold_opts:
+                    st.session_state.pop(_pt_hold_key, None)
+                hold_label1 = st.selectbox(
+                    "持有天數(今日算起)", _pt_hold_opts, index=0, key=_pt_hold_key,
+                )
+                if hold_label1 == _HOLD_CUSTOM_LABEL:
+                    hold_days = int(st.number_input(
+                        "自訂持有天數（交易日）", min_value=1, max_value=1260, value=5, step=1,
+                        key=f"price_target_hold_custom_{'tw' if is_tw else 'us'}",
+                    ))
+                    hold_disp1 = f"{hold_days} 個交易日"
+                else:
+                    hold_days = RECO_HOLD_OPTIONS[hold_label1]
+                    hold_disp1 = hold_label1 if hold_label1 == f"{hold_days}天" else f"{hold_label1}（{hold_days} 交易日）"
+            with col_a1:
+                aggr_label = st.selectbox(
+                    "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
+                    key=f"price_target_aggr_{'tw' if is_tw else 'us'}",
+                    help="保守＝目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
+                )
+            aggr_pct = RECO_AGGRESSIVENESS[aggr_label]
+            query_date = dt.date.today()
+            target_date = query_date + dt.timedelta(days=round(hold_days * 7 / 5))  # trading→calendar
+            st.caption(
+                "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
+                "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
+                "預測準確機率＝路徑式回測（持有期內最高/最低觸及的實測比例）。"
+                f"依過去 1 年、持有 {hold_disp1} 估算，"
+                f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
+                f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
+            )
+            # Same logic as the 買賣建議 tab (median move pricing, technical nudge,
+            # path-based touch rate), but on a fixed 1-year window, so 統計期間皆是 1 年.
+            pt = dl.get_price_history(primary, period="1y")
+            if pt.empty:
+                pt = df  # chart data (non-empty here) as a safety net
+            pt_close, pt_high, pt_low = pt["Close"], pt["High"], pt["Low"]
+            fwd_returns = pt_close.pct_change(periods=hold_days).dropna()
+            ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
+            up_move = float(np.percentile(ups, aggr_pct)) if not ups.empty else None
+            down_move = float(np.percentile(downs, 100 - aggr_pct)) if not downs.empty else None
+            # Technical nudge (布林/SMA多頭/型態 + 動能), same as the 買賣建議 formula.
+            _bias = recommend.technical_bias(pt_close, pt_high, pt_low,
+                                             recommend.horizon_for_hold_days(hold_days))
+            if up_move is not None:
+                up_move *= (1 + recommend.TECH_BIAS_BETA * _bias)
+            if down_move is not None:
+                down_move *= (1 - recommend.TECH_BIAS_BETA * _bias)
+
+            col_buy, col_sell = st.columns(2)
+            with col_buy:
+                if down_move is not None:
+                    acc = recommend.forward_touch_rate(pt_close, pt_low, hold_days, down_move, "down")
+                    st.metric("建議買入價（逢低承接）", f"{currency}{latest * (1 + down_move):,.2f}",
+                               f"{down_move * 100:.2f}%")
+                    st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最低觸及此買入價的比例約 "
+                               f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
+                else:
+                    st.metric("建議買入價（逢低承接）", "資料不足")
+            with col_sell:
+                if up_move is not None:
+                    acc = recommend.forward_touch_rate(pt_close, pt_high, hold_days, up_move, "up")
+                    st.metric("建議賣出價（目標停利）", f"{currency}{latest * (1 + up_move):,.2f}",
+                               f"{up_move * 100:.2f}%")
+                    st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最高觸及此賣出價的比例約 "
+                               f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
+                else:
+                    st.metric("建議賣出價（目標停利）", "資料不足")
+
+        st.divider()
+        st.markdown(f"### {primary_label} 基本財務面與技術分析簡述")
+        fdf = dl.get_fundamentals_table([primary])
+        if fdf.empty:
+            st.warning("無法取得基本面資料。")
+        else:
+            display = fdf.copy()
+            if "市值" in display:
+                display["市值"] = display["市值"].apply(
+                    lambda v: f"{currency}{v / 1e9:,.1f}B" if pd.notnull(v) else None)
+            for pct_col in ["營收成長率", "盈餘成長率", "淨利率", "ROE", "股息率"]:
+                if pct_col in display:
+                    display[pct_col] = display[pct_col].apply(
+                        lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
+            st.dataframe(display, use_container_width=True)
+
+        if not df.empty:
+            st.markdown("##### 技術分析")
+            tech_df, tech_conclusion = recommend.technical_analysis_brief(
+                close, df["High"], df["Low"], recommend.horizon_for_hold_days(hold_days))
+            if tech_df.empty:
+                st.info("資料不足，無法計算技術指標。")
+            else:
+                st.dataframe(tech_df, use_container_width=True, hide_index=True)
+                st.caption(f"建議說明：{tech_conclusion}")
+
+        st.divider()
+        news_date_label = news.recent_news_date_label()
+        st.markdown(f"### {primary_label} 相關新聞（{news_date_label}）")
+        # TW tickers: prefer the curated Chinese name for the news query — yfinance's
+        # "shortName" comes back in English for TWSE tickers (see _display_name),
+        # and an English company name paired with a zh-TW Google News search
+        # routinely returns zero matches.
+        company_name = universe.get_tw_company_name(primary) if is_tw else None
+        if not company_name:
+            company_name = (
+                fdf["公司名稱"].iloc[0] if not fdf.empty and "公司名稱" in fdf and pd.notnull(fdf["公司名稱"].iloc[0]) else None
+            )
+        # US tickers: zh-TW Google News rarely indexes small/mid-cap US names
+        # (e.g. OKLO), so lead with a broad English-language search instead and
+        # only fall back to the zh-TW search if that's empty. TW tickers keep
+        # the zh-TW search as primary.
+        if is_tw:
+            news_items = news.get_recent_news(primary, company_name)
+            extra_news = news.get_twse_news(primary, company_name) + news.get_mops_news(primary, company_name)
+        else:
+            news_items = news.get_recent_news_en(primary, company_name) or news.get_recent_news(primary, company_name)
+            extra_news = news.get_reuters_news(primary, company_name) + news.get_sec_filings(primary)
+        news_items = sorted(news_items + extra_news, key=lambda n: n["published"], reverse=True)
+        if not news_items:
+            st.info(f"暫無 {news_date_label} 的相關新聞。")
+        else:
+            for n in news_items:
+                published_str = n["published"].strftime("%Y-%m-%d %H:%M UTC")
+                # US headlines come back in English; show a best-effort zh-TW
+                # translation alongside the original (machine translation, may
+                # be imperfect — original title links through for verification).
+                title = n["title"]
+                if not is_tw:
+                    translated = news.translate_to_zh_tw(title)
+                    if translated and translated != title:
+                        title = f"{translated}（{title}）"
+                st.markdown(f"- [{title}]({n['link']})　_{n['source']}｜{published_str}_")
 
 # ---------- Tab 2: Multi-stock comparison, correlation & risk stats ----------
 with tab_compare_risk:
@@ -604,6 +604,7 @@ def _render_buy_sell_section(
     allow_zhu_gate: bool, header: str, show_formula_caption: bool = True,
     weight_table: dict | None = None, dividend_screen: bool = False,
     dividend_top_yield: int = 50, dividend_top_fill: int = 30,
+    require_confirm: bool = False,
 ) -> None:
     """Shared body for 買賣建議 and 存股區: both scan the same universe with
     the same 9-factor composite formula, but offer a different subset of
@@ -613,26 +614,31 @@ def _render_buy_sell_section(
     don't collide in session_state, and optionally a different weight_table
     (存股區 passes recommend.FACTOR_WEIGHTS_HOLDING, which leans harder into
     基本面/配息穩定性 than the general-purpose FACTOR_WEIGHTS_BY_HORIZON).
+
+    require_confirm (買賣建議 only): all 4 selectors default blank (index=
+    None) and a 確定 button gates the scan — nothing runs until the user
+    explicitly fills 統計期間/Top N/持有天數/目標積極度 and presses 確定.
+    存股區 keeps the original behaviour (preset defaults, live updates).
     """
     weight_table = weight_table or recommend.FACTOR_WEIGHTS_BY_HORIZON
     st.subheader(header)
-    col_period3, col_topn, col_hold, col_aggr = st.columns(4)
+    if require_confirm:
+        col_period3, col_topn, col_hold, col_aggr, col_confirm2 = st.columns(5)
+    else:
+        col_period3, col_topn, col_hold, col_aggr = st.columns(4)
     with col_period3:
         period_keys = list(period_options.keys())
         period_label = st.selectbox(
-            "統計期間", period_keys, index=period_keys.index(default_period_label),
+            "統計期間", period_keys,
+            index=None if require_confirm else period_keys.index(default_period_label),
             key=f"period_{tab_key}_{'tw' if is_tw else 'us'}",
             help="此處選的期間，就是「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。"
                  "「今年至今(YTD)」則為今年 1 月 1 日至今。",
         )
-        period_spec = period_options[period_label]
-        period = period_spec["fetch"]
-        reco_lookback = period_spec["lookback"]
-        reco_horizon = period_spec["horizon"]
-        reco_weights = weight_table[reco_horizon]
     with col_topn:
         top_n = st.selectbox(
-            "建議買賣標的數量 (Top N)", [1, 5, 10, 15], index=1, key=f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
+            "建議買賣標的數量 (Top N)", [1, 5, 10, 15],
+            index=None if require_confirm else 1, key=f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
         )
         # 買/賣 are mutually exclusive (checking one unchecks the other) rather
         # than independent checkboxes, so the table always shows exactly one
@@ -660,7 +666,8 @@ def _render_buy_sell_section(
     with col_hold:
         hold_keys = list(hold_options.keys()) + ([_HOLD_CUSTOM_LABEL] if allow_zhu_gate else [])
         hold_label = st.selectbox(
-            "持有天數", hold_keys, index=hold_keys.index(default_hold_label),
+            "持有天數", hold_keys,
+            index=None if require_confirm else hold_keys.index(default_hold_label),
             key=f"hold_{tab_key}_{'tw' if is_tw else 'us'}",
             help="預測準確機率以此持有天數（交易日）計算，建議進場／賣出價也用同一持有期。",
         )
@@ -670,20 +677,50 @@ def _render_buy_sell_section(
                 key=f"hold_custom_{tab_key}_{'tw' if is_tw else 'us'}",
             ))
             hold_display = f"{hold_days} 個交易日"
-        else:
+        elif hold_label is not None:
             hold_days = hold_options[hold_label]
             # Surface the actual trading-day count for week/month/year labels so
             # the caption's 天數 is unambiguously the same as the holding period
             # used in the calculation (e.g. "1個月（21 交易日）"). Day-count labels
             # like "5天" already equal the count, so no suffix is added.
             hold_display = hold_label if hold_label == f"{hold_days}天" else f"{hold_label}（{hold_days} 交易日）"
+        else:
+            hold_days = hold_display = None
     with col_aggr:
         aggr_label3 = st.selectbox(
-            "目標積極度", list(RECO_AGGRESSIVENESS.keys()), index=1,
+            "目標積極度", list(RECO_AGGRESSIVENESS.keys()),
+            index=None if require_confirm else 1,
             key=f"aggr_{tab_key}_{'tw' if is_tw else 'us'}",
             help="保守＝買賣目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
         )
-        reco_aggr = RECO_AGGRESSIVENESS[aggr_label3]
+        reco_aggr = RECO_AGGRESSIVENESS.get(aggr_label3)
+
+    if require_confirm:
+        _confirm_key = f"reco_confirmed_{tab_key}_{'tw' if is_tw else 'us'}"
+        _missing_key = f"{_confirm_key}_missing"
+        with col_confirm2:
+            st.write("")
+            if st.button(
+                "確定", key=f"reco_confirm_btn_{tab_key}_{'tw' if is_tw else 'us'}",
+                use_container_width=True,
+            ):
+                if None in (period_label, top_n, hold_label, aggr_label3):
+                    st.session_state[_missing_key] = True
+                else:
+                    st.session_state[_confirm_key] = True
+                    st.session_state[_missing_key] = False
+        if not st.session_state.get(_confirm_key):
+            if st.session_state.get(_missing_key):
+                st.warning("請完整選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。")
+            else:
+                st.info("請選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。")
+            return
+
+    period_spec = period_options[period_label]
+    period = period_spec["fetch"]
+    reco_lookback = period_spec["lookback"]
+    reco_horizon = period_spec["horizon"]
+    reco_weights = weight_table[reco_horizon]
 
     # 因子占比，緊接在「統計期間」等控制項下方一列呈現。權重直接取自
     # weight_table（reco_weights），所以買賣建議(9因子)跟存股區(10因子，多了
@@ -908,6 +945,7 @@ with tab_reco:
         RECO_PERIOD_OPTIONS, "1年",
         RECO_HOLD_OPTIONS, "1~5天",
         allow_zhu_gate=True, header="基金經理人觀點：建議買入 / 賣出",
+        require_confirm=True,
     )
 
 # ---------- Tab 4: 存股區 (long-term buy-and-hold view) ----------
