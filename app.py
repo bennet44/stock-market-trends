@@ -70,7 +70,10 @@ _PERSIST_EXCLUDE_KEYS = {"market"}
 # reco_confirmed_/price_confirmed_ 是各分頁「確定」鈕的閘門旗標（含 _missing
 # 提示狀態），也刻意不持久化——否則一旦按過確定，旗標會被存進 localStorage，
 # 下次開啟就略過閘門、自動跑掉昂貴的掃描，違背「按確定才查詢」的設計。
-_PERSIST_EXCLUDE_PREFIXES = ("show_buy_", "show_sell_", "reco_confirmed_", "price_confirmed_")
+_PERSIST_EXCLUDE_PREFIXES = (
+    "show_buy_", "show_sell_",
+    "reco_confirmed_", "price_confirmed_", "compare_confirmed_", "fcn_confirmed_",
+)
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
 try:
@@ -148,6 +151,47 @@ DEFAULT_RISK_FREE_RATE = 0.04
 # multi-year tenor or a several-asset worst-of basket).
 FCN_N_SIMS = 8000
 FCN_MAX_ASSETS = 5
+
+
+def _confirm_gate(
+    gate_key: str, signature: tuple, pressed: bool, *,
+    missing: bool, info_msg: str, warning_msg: str = "",
+) -> bool:
+    """A 確定-button gate shared by every tab.
+
+    Returns True only when the user has pressed 確定 on the *current* inputs
+    and nothing required is blank. `signature` is a tuple of all gating input
+    values; the confirmed snapshot is compared against it on every rerun, so
+    changing any input re-closes the gate (the user must press 確定 again
+    before the query/scan re-runs) — this is what stops a stale or
+    half-edited form from auto-querying. `missing` flags whether a required
+    input is still blank: pressing 確定 then shows `warning_msg` and the gate
+    stays shut; otherwise `info_msg` is shown until 確定 is pressed.
+
+    The caller renders the button itself (so it can sit in the right column)
+    and passes its return value as `pressed`; the gate's info/warning render
+    full-width here. Gate state keys all start with `gate_key`, which the
+    callers prefix so _PERSIST_EXCLUDE_PREFIXES keeps them out of
+    localStorage (a persisted "confirmed" flag would bypass the gate on the
+    next visit).
+    """
+    snap_key = f"{gate_key}_snap"
+    miss_key = f"{gate_key}_missing"
+    if pressed:
+        if missing:
+            st.session_state[miss_key] = True
+            st.session_state.pop(snap_key, None)
+        else:
+            st.session_state[miss_key] = False
+            st.session_state[snap_key] = signature
+    if not missing and st.session_state.get(snap_key) == signature:
+        return True
+    if missing and st.session_state.get(miss_key):
+        st.warning(warning_msg)
+    else:
+        st.info(info_msg)
+    return False
+
 
 def _display_name(ticker: str) -> str:
     """Return "代碼(公司名稱)", falling back to the bare ticker if the name
@@ -514,7 +558,7 @@ with tab_overview:
 
 # ---------- Tab 2: Multi-stock comparison, correlation & risk stats ----------
 with tab_compare_risk:
-    col_compare, col_period2 = st.columns([2, 1])
+    col_compare, col_period2, col_confirm3 = st.columns([2, 1, 1])
     with col_compare:
         if is_tw:
             compare_label = "比較用股票代號（逗號分隔，台股代碼；留空代表全部台股觀察清單，含ETF及個股）"
@@ -528,83 +572,94 @@ with tab_compare_risk:
         period_label = st.selectbox(
             "時間範圍", list(PERIOD_OPTIONS.keys()), index=3, key=f"period_tab2_{'tw' if is_tw else 'us'}"
         )
+    with col_confirm3:
+        st.write("")
+        _gate3 = f"compare_confirmed_{'tw' if is_tw else 'us'}"
+        _pressed3 = st.button("確定", key=f"{_gate3}_btn", use_container_width=True)
     period = PERIOD_OPTIONS[period_label]
-    raw_compare = compare_input.strip()
-    if raw_compare:
-        if is_tw:
-            compare_tickers = [universe.resolve_tw_ticker(t) for t in raw_compare.split(",") if t.strip()]
+    # Gate the heavy scan behind 確定. Wrapped in `if` (not st.stop) because
+    # every tab renders in the same script run — st.stop() here would also
+    # blank out the tabs after this one.
+    if _confirm_gate(
+        _gate3, (compare_input, period_label), _pressed3, missing=False,
+        info_msg="請輸入比較標的與時間範圍，再按「確定」開始比較。",
+    ):
+        raw_compare = compare_input.strip()
+        if raw_compare:
+            if is_tw:
+                compare_tickers = [universe.resolve_tw_ticker(t) for t in raw_compare.split(",") if t.strip()]
+            else:
+                compare_tickers = [t.strip().upper() for t in raw_compare.split(",") if t.strip()]
+        elif is_tw:
+            compare_tickers = universe.get_twse_tickers()
+            st.caption(f"已自動帶入全部台股觀察清單，含ETF及個股（{len(compare_tickers)} 檔）。")
         else:
-            compare_tickers = [t.strip().upper() for t in raw_compare.split(",") if t.strip()]
-    elif is_tw:
-        compare_tickers = universe.get_twse_tickers()
-        st.caption(f"已自動帶入全部台股觀察清單，含ETF及個股（{len(compare_tickers)} 檔）。")
-    else:
-        compare_tickers = universe.get_sp500_tickers()
-        st.caption(f"已自動帶入全部 S&P 500 成分股（{len(compare_tickers)} 檔）。首次掃描資料量大，"
-                   "請耐心等候，結果會快取加速下次載入。")
+            compare_tickers = universe.get_sp500_tickers()
+            st.caption(f"已自動帶入全部 S&P 500 成分股（{len(compare_tickers)} 檔）。首次掃描資料量大，"
+                       "請耐心等候，結果會快取加速下次載入。")
 
-    chart_tickers = compare_tickers
-    if len(compare_tickers) > MAX_CHART_TICKERS:
-        st.info(f"標的數量較多（{len(compare_tickers)} 檔），圖表僅顯示前 {MAX_CHART_TICKERS} 檔以維持可讀性與效能。")
-        chart_tickers = compare_tickers[:MAX_CHART_TICKERS]
+        chart_tickers = compare_tickers
+        if len(compare_tickers) > MAX_CHART_TICKERS:
+            st.info(f"標的數量較多（{len(compare_tickers)} 檔），圖表僅顯示前 {MAX_CHART_TICKERS} 檔以維持可讀性與效能。")
+            chart_tickers = compare_tickers[:MAX_CHART_TICKERS]
 
-    st.subheader("多股票報酬比較與相關性")
-    close_df = dl.get_multi_close(chart_tickers, period=period)
-    if close_df.empty or len(chart_tickers) < 2:
-        st.info("請輸入至少兩個股票代號以進行比較。")
-    else:
-        chart_labels = {t: _display_name(t) for t in chart_tickers}
-        normalized = close_df / close_df.iloc[0] * 100
-        norm_fig = go.Figure()
-        for t in normalized.columns:
-            norm_fig.add_trace(go.Scatter(x=normalized.index, y=normalized[t], name=chart_labels.get(t, t)))
-        norm_fig.update_layout(height=400, title="累積報酬比較（基準=100）",
-                                margin=dict(t=40, b=10))
-        st.plotly_chart(norm_fig, use_container_width=True)
+        st.subheader("多股票報酬比較與相關性")
+        close_df = dl.get_multi_close(chart_tickers, period=period)
+        if close_df.empty or len(chart_tickers) < 2:
+            st.info("請輸入至少兩個股票代號以進行比較。")
+        else:
+            chart_labels = {t: _display_name(t) for t in chart_tickers}
+            normalized = close_df / close_df.iloc[0] * 100
+            norm_fig = go.Figure()
+            for t in normalized.columns:
+                norm_fig.add_trace(go.Scatter(x=normalized.index, y=normalized[t], name=chart_labels.get(t, t)))
+            norm_fig.update_layout(height=400, title="累積報酬比較（基準=100）",
+                                    margin=dict(t=40, b=10))
+            st.plotly_chart(norm_fig, use_container_width=True)
 
-        corr = risk.correlation_matrix(close_df)
-        corr_labels = [chart_labels.get(t, t) for t in corr.columns]
-        heat_fig = go.Figure(go.Heatmap(
-            z=corr.values, x=corr_labels, y=corr_labels,
-            colorscale="RdBu", zmid=0, text=corr.round(2).values,
-            texttemplate="%{text}",
-        ))
-        heat_fig.update_layout(height=400, title="日報酬相關係數矩陣", margin=dict(t=40, b=10))
-        st.plotly_chart(heat_fig, use_container_width=True)
+            corr = risk.correlation_matrix(close_df)
+            corr_labels = [chart_labels.get(t, t) for t in corr.columns]
+            heat_fig = go.Figure(go.Heatmap(
+                z=corr.values, x=corr_labels, y=corr_labels,
+                colorscale="RdBu", zmid=0, text=corr.round(2).values,
+                texttemplate="%{text}",
+            ))
+            heat_fig.update_layout(height=400, title="日報酬相關係數矩陣", margin=dict(t=40, b=10))
+            st.plotly_chart(heat_fig, use_container_width=True)
 
-    st.divider()
-    st.subheader("風險與統計分析")
-    rows = {}
-    price_by_ticker = {}
-    for t in compare_tickers:
-        df_t = dl.get_price_history(t, period=period)
-        if not df_t.empty:
-            price_by_ticker[t] = df_t
-            rows[t] = risk.risk_summary(df_t["Close"], DEFAULT_RISK_FREE_RATE)
-    if rows:
-        summary_df = pd.DataFrame(rows).T
-        summary_df.index = [_display_name(t) for t in summary_df.index]
-        fmt = summary_df.copy()
-        for col in ["年化報酬率", "年化波動率", "最大回撤", "VaR (95%, 日)"]:
-            fmt[col] = fmt[col].apply(lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
-        fmt["Sharpe Ratio"] = fmt["Sharpe Ratio"].apply(
-            lambda v: f"{v:.2f}" if pd.notnull(v) else None)
-        st.dataframe(fmt, use_container_width=True)
+        st.divider()
+        st.subheader("風險與統計分析")
+        rows = {}
+        price_by_ticker = {}
+        for t in compare_tickers:
+            df_t = dl.get_price_history(t, period=period)
+            if not df_t.empty:
+                price_by_ticker[t] = df_t
+                rows[t] = risk.risk_summary(df_t["Close"], DEFAULT_RISK_FREE_RATE)
+        if rows:
+            summary_df = pd.DataFrame(rows).T
+            summary_df.index = [_display_name(t) for t in summary_df.index]
+            fmt = summary_df.copy()
+            for col in ["年化報酬率", "年化波動率", "最大回撤", "VaR (95%, 日)"]:
+                fmt[col] = fmt[col].apply(lambda v: f"{v * 100:.2f}%" if pd.notnull(v) else None)
+            fmt["Sharpe Ratio"] = fmt["Sharpe Ratio"].apply(
+                lambda v: f"{v:.2f}" if pd.notnull(v) else None)
+            st.dataframe(fmt, use_container_width=True)
 
-        st.markdown("#### 日報酬率分布")
-        hist_tickers = list(price_by_ticker.keys())
-        if len(hist_tickers) > MAX_CHART_TICKERS:
-            st.caption(f"標的數量較多，分布圖僅顯示前 {MAX_CHART_TICKERS} 檔以維持可讀性。")
-            hist_tickers = hist_tickers[:MAX_CHART_TICKERS]
-        hist_fig = go.Figure()
-        for t in hist_tickers:
-            rets = risk.daily_returns(price_by_ticker[t]["Close"]) * 100
-            hist_fig.add_trace(go.Histogram(x=rets, name=_display_name(t), opacity=0.6, nbinsx=60))
-        hist_fig.update_layout(barmode="overlay", height=350,
-                                xaxis_title="日報酬率 (%)", margin=dict(t=20, b=10))
-        st.plotly_chart(hist_fig, use_container_width=True)
-    else:
-        st.warning("無可用資料以計算風險指標。")
+            st.markdown("#### 日報酬率分布")
+            hist_tickers = list(price_by_ticker.keys())
+            if len(hist_tickers) > MAX_CHART_TICKERS:
+                st.caption(f"標的數量較多，分布圖僅顯示前 {MAX_CHART_TICKERS} 檔以維持可讀性。")
+                hist_tickers = hist_tickers[:MAX_CHART_TICKERS]
+            hist_fig = go.Figure()
+            for t in hist_tickers:
+                rets = risk.daily_returns(price_by_ticker[t]["Close"]) * 100
+                hist_fig.add_trace(go.Histogram(x=rets, name=_display_name(t), opacity=0.6, nbinsx=60))
+            hist_fig.update_layout(barmode="overlay", height=350,
+                                    xaxis_title="日報酬率 (%)", margin=dict(t=20, b=10))
+            st.plotly_chart(hist_fig, use_container_width=True)
+        else:
+            st.warning("無可用資料以計算風險指標。")
 
 # ---------- Tab 3: Buy/sell recommendations ----------
 def _render_buy_sell_section(
@@ -705,24 +760,21 @@ def _render_buy_sell_section(
         reco_aggr = RECO_AGGRESSIVENESS.get(aggr_label3)
 
     if require_confirm:
-        _confirm_key = f"reco_confirmed_{tab_key}_{'tw' if is_tw else 'us'}"
-        _missing_key = f"{_confirm_key}_missing"
+        _gate_key = f"reco_confirmed_{tab_key}_{'tw' if is_tw else 'us'}"
         with col_confirm2:
             st.write("")
-            if st.button(
-                "確定", key=f"reco_confirm_btn_{tab_key}_{'tw' if is_tw else 'us'}",
-                use_container_width=True,
-            ):
-                if None in (period_label, top_n, hold_label, aggr_label3):
-                    st.session_state[_missing_key] = True
-                else:
-                    st.session_state[_confirm_key] = True
-                    st.session_state[_missing_key] = False
-        if not st.session_state.get(_confirm_key):
-            if st.session_state.get(_missing_key):
-                st.warning("請完整選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。")
-            else:
-                st.info("請選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。")
+            _pressed = st.button("確定", key=f"{_gate_key}_btn", use_container_width=True)
+        # Signature includes the 4 selectors plus 存股區's 殖利率/填息率 screen
+        # inputs — changing any of them re-closes the gate so the scan only
+        # re-runs after a fresh 確定 (not live on every edit).
+        _sig = (period_label, top_n, hold_label, aggr_label3,
+                dividend_screen, dividend_top_yield, dividend_top_fill)
+        if not _confirm_gate(
+            _gate_key, _sig, _pressed,
+            missing=None in (period_label, top_n, hold_label, aggr_label3),
+            info_msg="請選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。",
+            warning_msg="請完整選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。",
+        ):
             return
 
     period_spec = period_options[period_label]
@@ -1072,84 +1124,93 @@ with tab_fcn:
         if ki_pct > strike_pct:
             st.warning("下限價 KI 通常不應高於執行價 STRIKE，請確認條款設定是否正確。")
 
-        fcn_closes = {}
-        for t in fcn_tickers:
-            t_df = dl.get_price_history(t, period="5y")
-            if not t_df.empty:
-                cutoff = t_df.index.max() - pd.DateOffset(months=tenor_months)
-                fcn_closes[t] = t_df["Close"][t_df.index >= cutoff]
-        missing = [t for t in fcn_tickers if t not in fcn_closes]
-        if missing:
-            st.error(f"找不到以下代號的價格資料，請確認是否正確：{', '.join(missing)}")
-        else:
-            close_df = pd.concat(fcn_closes, axis=1, join="inner")
-            close_df.columns = fcn_tickers
-            vols, drift_hist, corr = fcn.historical_stats(close_df)
-
-            dividend_yields = []
+        _fcn_gate = f"fcn_confirmed_{_mkt_suffix}"
+        _fcn_pressed = st.button("確定", key=f"{_fcn_gate}_btn")
+        # 任一條款參數變動都會讓閘門重新關閉，需再按「確定」才重新抓價＋模擬。
+        _fcn_sig = (n_assets, fcn_raw_tickers, tenor_months, strike_pct,
+                    ko_pct, ki_pct, coupon_rate, ki_style)
+        if _confirm_gate(
+            _fcn_gate, _fcn_sig, _fcn_pressed, missing=False,
+            info_msg="請設定好所有參數，再按「確定」開始模擬。",
+        ):
+            fcn_closes = {}
             for t in fcn_tickers:
-                dy = dl.get_company_info(t).get("dividendYield") or 0.0
-                if dy > 0.5:  # yfinance has, at times, returned this as a percent rather than a fraction
-                    dy /= 100.0
-                dividend_yields.append(dy)
-            dividend_yields = np.array(dividend_yields)
+                t_df = dl.get_price_history(t, period="5y")
+                if not t_df.empty:
+                    cutoff = t_df.index.max() - pd.DateOffset(months=tenor_months)
+                    fcn_closes[t] = t_df["Close"][t_df.index >= cutoff]
+            missing = [t for t in fcn_tickers if t not in fcn_closes]
+            if missing:
+                st.error(f"找不到以下代號的價格資料，請確認是否正確：{', '.join(missing)}")
+            else:
+                close_df = pd.concat(fcn_closes, axis=1, join="inner")
+                close_df.columns = fcn_tickers
+                vols, drift_hist, corr = fcn.historical_stats(close_df)
 
-            asset_summary = pd.DataFrame({
-                "最新收盤價": close_df.iloc[-1].apply(lambda v: f"{currency}{v:,.2f}"),
-                "年化歷史波動率": [f"{v * 100:.1f}%" for v in vols],
-                "年化歷史漲跌幅": [f"{v * 100:.1f}%" for v in drift_hist],
-                "股息率（估）": [f"{v * 100:.2f}%" for v in dividend_yields],
-            }, index=[_display_name(t) for t in fcn_tickers])
-            st.markdown("##### 標的概況")
-            st.caption(f"歷史統計窗口：投資時間相同的最近 {tenor_months} 個月（若窗口較短，波動率／相關性估計可能不穩定）。")
-            st.dataframe(asset_summary, use_container_width=True)
-            if n_assets > 1:
-                corr_df = pd.DataFrame(corr, index=[_display_name(t) for t in fcn_tickers],
-                                        columns=[_display_name(t) for t in fcn_tickers])
-                st.markdown("###### 標的間相關係數")
-                st.dataframe(corr_df.style.format("{:.2f}"), use_container_width=True)
+                dividend_yields = []
+                for t in fcn_tickers:
+                    dy = dl.get_company_info(t).get("dividendYield") or 0.0
+                    if dy > 0.5:  # yfinance has, at times, returned this as a percent rather than a fraction
+                        dy /= 100.0
+                    dividend_yields.append(dy)
+                dividend_yields = np.array(dividend_yields)
 
-            drift_choice = st.radio(
-                "風險評估的股價成長率假設",
-                ["中性假設：預期報酬＝無風險利率，僅反映波動風險（較保守，預設）",
-                 "延伸近期歷史走勢（依上表「年化歷史漲跌幅」，可能過度樂觀或悲觀，僅供對照）"],
-                key=f"fcn_drift_choice_{_mkt_suffix}",
-            )
-            use_historical_drift = drift_choice.startswith("延伸近期歷史走勢")
+                asset_summary = pd.DataFrame({
+                    "最新收盤價": close_df.iloc[-1].apply(lambda v: f"{currency}{v:,.2f}"),
+                    "年化歷史波動率": [f"{v * 100:.1f}%" for v in vols],
+                    "年化歷史漲跌幅": [f"{v * 100:.1f}%" for v in drift_hist],
+                    "股息率（估）": [f"{v * 100:.2f}%" for v in dividend_yields],
+                }, index=[_display_name(t) for t in fcn_tickers])
+                st.markdown("##### 標的概況")
+                st.caption(f"歷史統計窗口：投資時間相同的最近 {tenor_months} 個月（若窗口較短，波動率／相關性估計可能不穩定）。")
+                st.dataframe(asset_summary, use_container_width=True)
+                if n_assets > 1:
+                    corr_df = pd.DataFrame(corr, index=[_display_name(t) for t in fcn_tickers],
+                                            columns=[_display_name(t) for t in fcn_tickers])
+                    st.markdown("###### 標的間相關係數")
+                    st.dataframe(corr_df.style.format("{:.2f}"), use_container_width=True)
 
-            drift_risk_neutral = DEFAULT_RISK_FREE_RATE - dividend_yields
-            drift_for_risk = drift_hist if use_historical_drift else drift_risk_neutral
-
-            with st.spinner("模擬中…"):
-                stats = _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drift_for_risk, corr,
-                                  DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
-                rn_stats = (
-                    stats if not use_historical_drift else
-                    _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drift_risk_neutral, corr,
-                             DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
+                drift_choice = st.radio(
+                    "風險評估的股價成長率假設",
+                    ["中性假設：預期報酬＝無風險利率，僅反映波動風險（較保守，預設）",
+                     "延伸近期歷史走勢（依上表「年化歷史漲跌幅」，可能過度樂觀或悲觀，僅供對照）"],
+                    key=f"fcn_drift_choice_{_mkt_suffix}",
                 )
-            realized = fcn.realized_returns(stats, coupon_rate)
-            fair_coupon = fcn.fair_coupon_rate(rn_stats)
+                use_historical_drift = drift_choice.startswith("延伸近期歷史走勢")
 
-            st.divider()
-            st.markdown("##### 風險評估結果")
-            r1, r2, r3 = st.columns(3)
-            r1.metric("提前出場機率", f"{stats.prob_autocall * 100:.1f}%")
-            r2.metric("平均出場月數", f"{stats.avg_exit_month:.1f} 個月")
-            r3.metric("本金虧損機率", f"{stats.prob_breach * 100:.1f}%")
+                drift_risk_neutral = DEFAULT_RISK_FREE_RATE - dividend_yields
+                drift_for_risk = drift_hist if use_historical_drift else drift_risk_neutral
 
-            r4, r5, r6 = st.columns(3)
-            r4.metric("期望報酬（總報酬，非年化）", f"{realized.mean() * 100:.2f}%")
-            r5.metric("5%最差情境報酬", f"{np.percentile(realized, 5) * 100:.2f}%")
-            r6.metric("風險中性參考年化收益率", f"{fair_coupon * 100:.2f}%",
-                      f"您輸入 {coupon_rate * 100:.2f}%")
-            st.caption(
-                "「風險中性參考年化收益率」為假設無風險利率"
-                f"（年化 {DEFAULT_RISK_FREE_RATE * 100:.0f}%）下，使票券折現價值等於票面（100%）的"
-                "理論票息，可與您輸入的「年化收益率」比較：您輸入值若明顯偏低，代表此票券條款對發行商"
-                "較有利；若明顯偏高，請留意是否低估了風險（例如波動率估計過低）。"
-                "「本金虧損機率」「期望報酬」則依您所選的風險評估假設計算，為您實際可能面對的風險參考。"
-            )
+                with st.spinner("模擬中…"):
+                    stats = _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drift_for_risk, corr,
+                                      DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
+                    rn_stats = (
+                        stats if not use_historical_drift else
+                        _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drift_risk_neutral, corr,
+                                 DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
+                    )
+                realized = fcn.realized_returns(stats, coupon_rate)
+                fair_coupon = fcn.fair_coupon_rate(rn_stats)
+
+                st.divider()
+                st.markdown("##### 風險評估結果")
+                r1, r2, r3 = st.columns(3)
+                r1.metric("提前出場機率", f"{stats.prob_autocall * 100:.1f}%")
+                r2.metric("平均出場月數", f"{stats.avg_exit_month:.1f} 個月")
+                r3.metric("本金虧損機率", f"{stats.prob_breach * 100:.1f}%")
+
+                r4, r5, r6 = st.columns(3)
+                r4.metric("期望報酬（總報酬，非年化）", f"{realized.mean() * 100:.2f}%")
+                r5.metric("5%最差情境報酬", f"{np.percentile(realized, 5) * 100:.2f}%")
+                r6.metric("風險中性參考年化收益率", f"{fair_coupon * 100:.2f}%",
+                          f"您輸入 {coupon_rate * 100:.2f}%")
+                st.caption(
+                    "「風險中性參考年化收益率」為假設無風險利率"
+                    f"（年化 {DEFAULT_RISK_FREE_RATE * 100:.0f}%）下，使票券折現價值等於票面（100%）的"
+                    "理論票息，可與您輸入的「年化收益率」比較：您輸入值若明顯偏低，代表此票券條款對發行商"
+                    "較有利；若明顯偏高，請留意是否低估了風險（例如波動率估計過低）。"
+                    "「本金虧損機率」「期望報酬」則依您所選的風險評估假設計算，為您實際可能面對的風險參考。"
+                )
 
     st.divider()
     st.caption(
