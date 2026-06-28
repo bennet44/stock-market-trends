@@ -48,6 +48,8 @@ st.markdown(
       div[role="radiogroup"] { gap: .4rem; }
       h3 { margin-top: .3rem; letter-spacing: .2px; }
       hr { margin: 1.1rem 0; border-color: #232b38; }
+      /* 市場確定鈕縮小20%，並修正上緣被裁切的問題 */
+      div.st-key-confirm_btn_wrap { transform: scale(0.8); transform-origin: left top; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -215,8 +217,9 @@ with _col_market:
         label_visibility="collapsed",
     )
 with _col_confirm:
-    if st.button("確定", use_container_width=True) and _market_choice is not None:
-        st.session_state["market_confirmed"] = _market_choice
+    with st.container(key="confirm_btn_wrap"):
+        if st.button("確定", use_container_width=True) and _market_choice is not None:
+            st.session_state["market_confirmed"] = _market_choice
 
 if "market_confirmed" not in st.session_state:
     st.info("請先選擇市場（美股／台股），再按「確定」開始查詢。")
