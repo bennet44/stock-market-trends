@@ -622,10 +622,9 @@ def _render_buy_sell_section(
     (存股區 passes recommend.FACTOR_WEIGHTS_HOLDING, which leans harder into
     基本面/配息穩定性 than the general-purpose FACTOR_WEIGHTS_BY_HORIZON).
 
-    require_confirm (買賣建議 only): all 4 selectors default blank (index=
-    None) and a 確定 button gates the scan — nothing runs until the user
-    explicitly fills 統計期間/Top N/持有天數/目標積極度 and presses 確定.
-    存股區 keeps the original behaviour (preset defaults, live updates).
+    require_confirm (買賣建議 + 存股區): all 4 selectors default blank
+    (index=None) and a 確定 button gates the scan — nothing runs until the
+    user explicitly fills 統計期間/Top N/持有天數/目標積極度 and presses 確定.
     """
     weight_table = weight_table or recommend.FACTOR_WEIGHTS_BY_HORIZON
     st.subheader(header)
@@ -741,7 +740,7 @@ def _render_buy_sell_section(
         "基本面": "基本面",
         "籌碼": "籌碼面",
         "新聞情緒": "新聞情緒",
-        "配息穩定性": "配息波動率(僅供參考)",
+        "配息穩定性": "配息穩定性",
         "殖利率": "殖利率",
     }
     _FACTOR_DISPLAY = {k: _FACTOR_LABELS_ALL.get(k, k) for k in reco_weights}
@@ -988,7 +987,7 @@ with tab_stock_hold:
         allow_zhu_gate=False, header="長期存股觀點：建議買入 / 賣出",
         show_formula_caption=False, weight_table=recommend.FACTOR_WEIGHTS_HOLDING,
         dividend_top_yield=_div_top_yield, dividend_top_fill=_div_top_fill,
-        dividend_screen=_dividend_screen_on,
+        dividend_screen=_dividend_screen_on, require_confirm=True,
     )
 
 # ---------- Tab 5: FCN risk assessment ----------

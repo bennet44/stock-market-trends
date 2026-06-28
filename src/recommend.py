@@ -65,12 +65,10 @@ FACTOR_WEIGHTS_BY_HORIZON = {
 # medium/long weights, which still allocate meaningfully to momentum/news for
 # the 買賣建議 tab's shorter "medium" selections (3個月/6個月/YTD).
 FACTOR_WEIGHTS_HOLDING = {
-    # 配息穩定性 is intentionally weighted ~0 here — it's shown in the table
-    # (連續配發/年度金額穩定度) for reference, but per user feedback it
-    # shouldn't drive the ranking. That weight has been redistributed to
-    # 殖利率 (actual dividend yield — "高股息") plus a bit more on
-    # 期間報酬率/趨勢/基本面 (capital-gain potential — "資本利得"), matching
-    # the 存股區 goal of 高股息且有資本利得.
+    # 存股取向的配息訊號拆成兩塊並重：殖利率（高股息）與配息穩定性（連續
+    # 配發/年度金額穩定度）。配息相關總權重維持不變（medium 0.20、long
+    # 0.25），只是從原本全押殖利率，改成殖利率與配息穩定性分配，讓「配得多
+    # 但配得不穩」的標的不會單靠殖利率衝高排名。
     "medium": {
         "期間報酬率": 0.08,
         "技術面": 0.05,
@@ -80,8 +78,8 @@ FACTOR_WEIGHTS_HOLDING = {
         "Sharpe Ratio": 0.12,
         "估值(1/預估PE)": 0.12,
         "基本面": 0.25,
-        "殖利率": 0.20,
-        "配息穩定性": 0.00,
+        "殖利率": 0.12,
+        "配息穩定性": 0.08,
     },
     "long": {
         "期間報酬率": 0.05,
@@ -92,8 +90,8 @@ FACTOR_WEIGHTS_HOLDING = {
         "Sharpe Ratio": 0.12,
         "估值(1/預估PE)": 0.12,
         "基本面": 0.30,
-        "殖利率": 0.25,
-        "配息穩定性": 0.00,
+        "殖利率": 0.15,
+        "配息穩定性": 0.10,
     },
 }
 # Default / backward-compatible weights when no horizon is specified.
