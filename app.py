@@ -48,8 +48,10 @@ st.markdown(
       div[role="radiogroup"] { gap: .4rem; }
       h3 { margin-top: .3rem; letter-spacing: .2px; }
       hr { margin: 1.1rem 0; border-color: #232b38; }
-      /* 市場確定鈕縮小20%，並修正上緣被裁切的問題 */
-      div.st-key-confirm_btn_wrap { transform: scale(0.8); transform-origin: left top; }
+      /* 市場確定鈕縮小20%（改用padding/字體縮小，避免transform造成文字置中跑掉） */
+      div.st-key-confirm_btn_wrap button {
+        padding-top: .192rem; padding-bottom: .192rem; font-size: .8rem; min-height: 0;
+      }
     </style>
     """,
     unsafe_allow_html=True,
