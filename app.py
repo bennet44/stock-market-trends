@@ -65,6 +65,9 @@ _SETTINGS_STORAGE_KEY = "dashboard_settings"
 # (or vice versa) and seeing the wrong stock. Every other tab's
 # settings/inputs are still remembered.
 _PERSIST_EXCLUDE_KEYS = {"market"}
+# 買/賣切換刻意不持久化：每次開啟都回到「買」預設（_render_buy_sell_section
+# 在這兩個 key 不存在時會把買=True/賣=False），同一 session 內仍可自由切換。
+_PERSIST_EXCLUDE_PREFIXES = ("show_buy_", "show_sell_")
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
 try:
@@ -72,7 +75,8 @@ try:
 except (TypeError, ValueError):
     _saved_settings = {}
 for _k, _v in _saved_settings.items():
-    if _k not in st.session_state and _k not in _PERSIST_EXCLUDE_KEYS:
+    if (_k not in st.session_state and _k not in _PERSIST_EXCLUDE_KEYS
+            and not _k.startswith(_PERSIST_EXCLUDE_PREFIXES)):
         st.session_state[_k] = _v
 
 PERIOD_OPTIONS = {
@@ -210,7 +214,10 @@ def _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drifts, corr, risk_
 # choose this visit). Each tab below gates its own query behind its own
 # 確定 button instead of one global gate, so picking a market alone no
 # longer blocks the whole page.
-market = st.radio("市場", ["美股", "台股"], index=None, horizontal=True, key="market")
+market = st.radio(
+    "市場", ["美股", "台股"], index=None, horizontal=True, key="market",
+    label_visibility="collapsed",
+)
 if market is None:
     st.info("請先選擇市場（美股／台股）。")
     st.stop()
@@ -1156,5 +1163,6 @@ with tab_fcn:
 _settings_to_save = {
     k: v for k, v in st.session_state.items()
     if k != "storage_init" and not k.startswith("save_") and k not in _PERSIST_EXCLUDE_KEYS
+    and not k.startswith(_PERSIST_EXCLUDE_PREFIXES)
 }
 _local_storage.setItem(_SETTINGS_STORAGE_KEY, json.dumps(_settings_to_save), key="save_dashboard_settings")
