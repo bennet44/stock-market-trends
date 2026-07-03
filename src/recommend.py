@@ -33,28 +33,31 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         # 配息穩定性不參與短線評分 — 股息對幾天內的進出毫無影響。
         "配息穩定性": 0.00,
     },
+    # 買賣建議定位為賺資本利得（價差），配息對價差沒有貢獻 — 配息穩定性
+    # 在所有 horizon 一律 0，原權重轉配給價格訊號（動能/技術面）與長期
+    # 價差的來源（成長＝基本面、便宜＝估值）。領息需求請用存股區
+    # （FACTOR_WEIGHTS_HOLDING）。
     "medium": {
-        "期間報酬率": 0.15,
-        "技術面": 0.13,
+        "期間報酬率": 0.17,
+        "技術面": 0.15,
         "籌碼": 0.12,
         "新聞情緒": 0.12,
         "趨勢(價格/均線)": 0.10,
         "Sharpe Ratio": 0.13,
         "估值(1/預估PE)": 0.12,
-        "基本面": 0.08,
-        "配息穩定性": 0.05,
+        "基本面": 0.09,
+        "配息穩定性": 0.00,
     },
     "long": {
-        "期間報酬率": 0.10,
+        "期間報酬率": 0.12,
         "技術面": 0.06,
         "籌碼": 0.06,
         "新聞情緒": 0.06,
-        "趨勢(價格/均線)": 0.08,
+        "趨勢(價格/均線)": 0.09,
         "Sharpe Ratio": 0.22,
-        "估值(1/預估PE)": 0.20,
-        "基本面": 0.12,
-        # 長期/存股取向：配息連續且穩定的公司額外加分。
-        "配息穩定性": 0.10,
+        "估值(1/預估PE)": 0.22,
+        "基本面": 0.17,
+        "配息穩定性": 0.00,
     },
 }
 
@@ -65,46 +68,52 @@ FACTOR_WEIGHTS_BY_HORIZON = {
 # medium/long weights, which still allocate meaningfully to momentum/news for
 # the 買賣建議 tab's shorter "medium" selections (3個月/6個月/YTD).
 FACTOR_WEIGHTS_HOLDING = {
-    # 存股取向的配息訊號拆成兩塊並重：殖利率（高股息）與配息穩定性（連續
-    # 配發/年度金額穩定度）。配息相關總權重維持不變（medium 0.20、long
-    # 0.25），只是從原本全押殖利率，改成殖利率與配息穩定性分配，讓「配得多
-    # 但配得不穩」的標的不會單靠殖利率衝高排名。
+    # 存股區定位為現金流（領息），與買賣建議（賺價差）的差異刻意拉大：
+    # 1. 配息三訊號合計最大：殖利率（領多少）＋配息穩定性（領得穩）＋
+    #    填息率（除息後 60 交易日內回補缺口的比例 — 貼息等於把本金配給你，
+    #    實質現金流打折，直接進公式扣分而不只是篩選器）。
+    # 2. 風險調整報酬用 Sortino 取代 Sharpe：存股在意「跌的時候穩不穩」，
+    #    上漲波動不該被懲罰。
+    # 3. 期間報酬率/技術面/籌碼/新聞情緒對現金流是雜訊，壓到接近 0；
+    #    基本面維持高權重 — 配息的可持續性來自獲利。
     "medium": {
-        "期間報酬率": 0.08,
-        "技術面": 0.05,
-        "籌碼": 0.05,
-        "新聞情緒": 0.05,
-        "趨勢(價格/均線)": 0.08,
-        "Sharpe Ratio": 0.12,
-        "估值(1/預估PE)": 0.12,
-        "基本面": 0.25,
-        "殖利率": 0.12,
-        "配息穩定性": 0.08,
-    },
-    "long": {
         "期間報酬率": 0.05,
         "技術面": 0.03,
         "籌碼": 0.03,
         "新聞情緒": 0.03,
-        "趨勢(價格/均線)": 0.07,
-        "Sharpe Ratio": 0.12,
+        "趨勢(價格/均線)": 0.06,
+        "Sortino": 0.10,
         "估值(1/預估PE)": 0.12,
-        "基本面": 0.30,
+        "基本面": 0.25,
         "殖利率": 0.15,
         "配息穩定性": 0.10,
+        "填息率": 0.08,
+    },
+    "long": {
+        "期間報酬率": 0.03,
+        "技術面": 0.02,
+        "籌碼": 0.02,
+        "新聞情緒": 0.02,
+        "趨勢(價格/均線)": 0.05,
+        "Sortino": 0.10,
+        "估值(1/預估PE)": 0.10,
+        "基本面": 0.28,
+        "殖利率": 0.17,
+        "配息穩定性": 0.15,
+        "填息率": 0.06,
     },
 }
 # Default / backward-compatible weights when no horizon is specified.
 FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 
 # Sub-weights *inside* the 技術面 factor, switched by horizon. Six sub-signals:
-# momentum (MACD/KD/RSI), Bollinger %B (bb), SMA bullish-alignment (sma), and
+# momentum (MACD/KDJ/RSI), Bollinger %B (bb), SMA bullish-alignment (sma), and
 # trend/pattern regression slope (pat). Short windows lean on momentum &
 # Bollinger; long windows lean on SMA alignment & trend. Each row sums to 1.0.
 TECH_SUBWEIGHTS_BY_HORIZON = {
-    "short":  {"macd": 0.20, "kd": 0.15, "rsi": 0.15, "bb": 0.25, "sma": 0.10, "pat": 0.15},
-    "medium": {"macd": 0.15, "kd": 0.10, "rsi": 0.10, "bb": 0.15, "sma": 0.30, "pat": 0.20},
-    "long":   {"macd": 0.10, "kd": 0.05, "rsi": 0.05, "bb": 0.05, "sma": 0.50, "pat": 0.25},
+    "short":  {"macd": 0.18, "kd": 0.13, "rsi": 0.13, "bb": 0.22, "sma": 0.10, "pat": 0.14, "adx": 0.10},
+    "medium": {"macd": 0.13, "kd": 0.08, "rsi": 0.08, "bb": 0.12, "sma": 0.27, "pat": 0.17, "adx": 0.15},
+    "long":   {"macd": 0.08, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.44, "pat": 0.18, "adx": 0.18},
 }
 
 # The 趨勢 factor's reference moving average, by horizon: short uses the 5-day
@@ -124,6 +133,8 @@ _SCORE_FETCH_WORKERS = 20
 _FACTOR_LABELS = {
     "期間報酬率": "期間報酬率",
     "Sharpe Ratio": "風險調整後報酬(Sharpe)",
+    "Sortino": "下跌風險調整報酬(Sortino)",
+    "填息率": "填息率(除息60日內回補比例)",
     "趨勢(價格/均線)": "價格趨勢(短SMA5/中SMA20月線/長SMA60)",
     "估值(1/預估PE)": "估值水準",
     "新聞情緒": "新聞情緒",
@@ -169,12 +180,21 @@ def _news_sentiment(ticker: str, company_name: str | None) -> tuple[float, str]:
     return score, summary
 
 
-def _technical_summary(rsi, k, d, macd_hist, info: dict) -> str:
+def _technical_summary(rsi, k, d, j, macd_hist, info: dict) -> str:
     """Compact quantified technical readout for the 原因說明 column:
-    KD / MACD / RSI plus dividend per share & dividend yield."""
+    KDJ / MACD / RSI plus dividend per share & dividend yield."""
     parts = []
-    if pd.notna(k) and pd.notna(d):
-        parts.append("KD" + ("金叉" if k >= d else "死叉"))
+    if pd.notna(j):
+        if j < 0:
+            parts.append(f"J{j:.0f}(極度超賣)")
+        elif j > 100:
+            parts.append(f"J{j:.0f}(極度超買)")
+        elif j <= 20:
+            parts.append(f"J{j:.0f}(超賣)")
+        elif j >= 80:
+            parts.append(f"J{j:.0f}(超買)")
+        else:
+            parts.append(f"J{j:.0f}")
     if pd.notna(macd_hist):
         parts.append("MACD" + ("翻紅" if macd_hist >= 0 else "翻黑"))
     if pd.notna(rsi):
@@ -382,7 +402,15 @@ def build_recommendation_table(
         # when the window is too short — neutralized by _zscore later).
         macd_hist = ta.macd(close)["hist"].iloc[-1]
         kd_df = ta.kd(high, low, close)
+        kd_j = kd_df["j"].iloc[-1]
         rsi_last = ta.rsi(close).iloc[-1]
+        adx_df = ta.adx(high, low, close)
+        adx_val = adx_df["adx"].iloc[-1]
+        adx_pdi = adx_df["plus_di"].iloc[-1]
+        adx_mdi = adx_df["minus_di"].iloc[-1]
+        _adx_dir = float(np.clip((adx_pdi - adx_mdi) / 50, -1, 1)) if pd.notna(adx_pdi) and pd.notna(adx_mdi) else np.nan
+        _adx_str = min(float(adx_val) / 25, 1.0) if pd.notna(adx_val) else np.nan
+        adx_signal = _adx_dir * _adx_str if pd.notna(_adx_dir) and pd.notna(_adx_str) else np.nan
         # 布林 %B: where the close sits in the band (centred at 0); >0 upper half.
         bb = ta.bollinger_bands(close)
         bb_up, bb_lo = bb["upper"].iloc[-1], bb["lower"].iloc[-1]
@@ -407,10 +435,21 @@ def build_recommendation_table(
             cmf = ta.chaikin_money_flow(high, low, close, volume, window=min(20, max(2, len(win) - 1)))
             chip = cmf.iloc[-1] if len(cmf) else np.nan
 
+        # 填息率 factor (存股區 weights only): needs its own 2y price fetch,
+        # so only pay for it when the weight table actually scores it.
+        fill_rate = np.nan
+        if "填息率" in weights:
+            _, _fr = _dividend_yield_and_fill_rate(t)
+            fill_rate = _fr if _fr is not None else np.nan
+
         row = {
             "最新收盤價": last_close,
             "期間報酬率": last_close / close.iloc[0] - 1,
             "Sharpe Ratio": risk_mod.sharpe_ratio(rets, risk_free_rate),
+            # 存股區 scores Sortino instead of Sharpe (downside deviation only —
+            # 上漲波動不懲罰); computed for every scan since it's free, but only
+            # weighted when the weight table includes it.
+            "Sortino": risk_mod.sortino_ratio(rets, risk_free_rate),
             "趨勢(價格/均線)": (last_close / sma_trend - 1) if pd.notna(sma_trend) and sma_trend else np.nan,
             "估值(1/預估PE)": (1 / pe) if pe and pe > 0 else np.nan,
             "RSI (14)": rsi_last,
@@ -421,7 +460,8 @@ def build_recommendation_table(
             "_f_roe": info.get("returnOnEquity"),
             # 技術面 sub-metrics
             "_t_macd": macd_hist / last_close if last_close else np.nan,
-            "_t_kd": kd_df["k"].iloc[-1] - kd_df["d"].iloc[-1],
+            "_t_kd": kd_j - 50,  # J centred at 50; more sensitive than K−D
+            "_t_adx": adx_signal,  # direction × strength; +1 = strong bullish trend
             "_t_rsi": rsi_last - 50,
             "_t_bb": pct_b,
             "_t_sma": sma_align,
@@ -447,10 +487,15 @@ def build_recommendation_table(
             "_zhu_signal": 1.0 if zhu_signal else 0.0,
             "_zhu_vol_ok": 1.0 if zhu_vol_ok else 0.0,
             # 原因說明 enrichments (display-only strings)
-            "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], macd_hist, info),
+            "技術摘要": _technical_summary(rsi_last, kd_df["k"].iloc[-1], kd_df["d"].iloc[-1], kd_j, macd_hist, info),
             "基本面摘要": _fundamental_summary(info),
             "_company_name": info.get("shortName"),
         }
+        if "填息率" in weights:
+            # Raw fraction: displayed as a percentage column AND z-scored by the
+            # weighting loop below (the loop z-scores every factor column, so raw
+            # values are fine here — same as 期間報酬率/趨勢).
+            row["填息率"] = fill_rate
         return t, row
 
     rows = {}
@@ -635,9 +680,13 @@ def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: s
     if pd.notna(hist) and last:
         sigs["macd"] = float(np.tanh(hist / last * 50))
     kd = ta.kd(high, low, close)
-    if pd.notna(kd["k"].iloc[-1]) and pd.notna(kd["d"].iloc[-1]):
-        sigs["kd"] = float(np.clip((kd["k"].iloc[-1] - kd["d"].iloc[-1]) / 100, -1, 1))
+    if pd.notna(kd["j"].iloc[-1]):
+        sigs["kd"] = float(np.clip((kd["j"].iloc[-1] - 50) / 50, -1, 1))
     rsi = ta.rsi(close).iloc[-1]
+    adx_df = ta.adx(high, low, close)
+    _pdi, _mdi, _adx = adx_df["plus_di"].iloc[-1], adx_df["minus_di"].iloc[-1], adx_df["adx"].iloc[-1]
+    if pd.notna(_pdi) and pd.notna(_mdi) and pd.notna(_adx):
+        sigs["adx"] = float(np.clip((_pdi - _mdi) / 50, -1, 1)) * min(float(_adx) / 25, 1.0)
     if pd.notna(rsi):
         sigs["rsi"] = float(np.clip((rsi - 50) / 50, -1, 1))
     bb = ta.bollinger_bands(close)
@@ -706,6 +755,16 @@ def technical_analysis_brief(close: pd.Series, high: pd.Series, low: pd.Series,
             status = "糾結整理"
         rows.append(("均線排列 (5/10/20)", f"{s5:.1f} / {s10:.1f} / {s20:.1f}", status,
                      "短中長均線依大小排序：多頭排列＝5>10>20，空頭排列＝5<10<20。"))
+
+    adx_df = ta.adx(high, low, close) if len(close) >= 2 else None
+    if adx_df is not None and pd.notna(adx_df["adx"].iloc[-1]):
+        adx_val = adx_df["adx"].iloc[-1]
+        pdi, mdi = adx_df["plus_di"].iloc[-1], adx_df["minus_di"].iloc[-1]
+        trend_str = "強趨勢" if adx_val >= 25 else ("弱趨勢" if adx_val >= 20 else "盤整")
+        direction = "多頭主導" if pdi > mdi else "空頭主導"
+        rows.append(("ADX (14)", f"ADX{adx_val:.0f} +DI{pdi:.0f} −DI{mdi:.0f}",
+                     f"{trend_str}・{direction}",
+                     "ADX≥25趨勢明確（越高越強）；+DI>−DI多頭、<−DI空頭。ADX<20為盤整，不適合追趨勢。"))
 
     df = pd.DataFrame(rows, columns=["指標", "現況數值", "狀態", "說明"])
 
@@ -824,7 +883,7 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
     summary_col = {"技術面": "技術摘要", "新聞情緒": "新聞摘要", "基本面": "基本面摘要"}
     # Pure performance/return metrics are not "reasons" — the 原因說明 should read
     # as 基本面/技術面/籌碼面 analysis, so these are left out of it.
-    reason_exclude = {"期間報酬率", "Sharpe Ratio"}
+    reason_exclude = {"期間報酬率", "Sharpe Ratio", "Sortino"}
     contrib_cols = [c for c in df.columns if c.startswith(_CONTRIB_PREFIX)]
     reasons = []
     for _, row in df.iterrows():

@@ -271,9 +271,73 @@ if market is None:
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
 
-tab_overview, tab_reco, tab_compare_risk, tab_stock_hold, tab_fcn = st.tabs(
-    ["📈 價格、技術指標與基本面", "💡 買賣建議", "🔗 多股比較與風險統計", "🏦 存股區", "📐 FCN風險評估"]
+tab_news, tab_overview, tab_reco, tab_compare_risk, tab_stock_hold, tab_fcn = st.tabs(
+    ["🌍 市場焦點", "📈 價格、技術指標與基本面", "💡 買賣建議", "🔗 多股比較與風險統計", "🏦 存股區", "📐 FCN風險評估"]
 )
+
+
+def _is_english_title(title: str) -> bool:
+    """No CJK characters → treat as English and machine-translate for display."""
+    return not any("一" <= ch <= "鿿" for ch in title)
+
+
+def _render_news_line(item: dict, translate: bool = False) -> None:
+    """One headline as 'MM/DD [中文標題](link)（來源）', with the English
+    original in a caption underneath when it was machine-translated."""
+    title = news._strip_source_suffix(item["title"])
+    src = item.get("source") or ""
+    date_str = f"{item['published']:%m/%d}"
+    if translate and _is_english_title(title):
+        zh = news.translate_to_zh_tw(title)
+        st.markdown(f"**{date_str}**　[{zh}]({item['link']})　`{src}`")
+        if zh != title:
+            st.caption(f"　原文：{title}")
+    else:
+        st.markdown(f"**{date_str}**　[{title}]({item['link']})　`{src}`")
+
+
+# ---------- Tab 0: 市場焦點 (US market briefing / global events) ----------
+with tab_news:
+    st.caption(
+        "資料來源：Google News RSS（英文標題以機器翻譯轉為中文，僅供快速瀏覽，"
+        "重要決策請點開原文確認）。快取 30 分鐘～6 小時自動更新。"
+    )
+
+    st.subheader("📅 美國本週重要紀事")
+    st.caption("本週聯準會動態、CPI／就業數據、財報週等市場行事曆相關頭條。")
+    with st.spinner("正在載入本週紀事…"):
+        _week_items = news.get_us_week_ahead()
+    if _week_items:
+        for _n in _week_items:
+            _render_news_line(_n, translate=True)
+    else:
+        st.info("目前無法取得本週紀事（來源無資料或網路異常）。")
+
+    st.divider()
+    st.subheader("📰 影響今日美股的新聞")
+    st.caption("近兩天（涵蓋美台時差）影響大盤的頭條，已翻譯為中文並附原文。")
+    with st.spinner("正在載入並翻譯今日美股新聞…"):
+        _today_items = news.get_us_market_today()
+    if _today_items:
+        for _n in _today_items:
+            _render_news_line(_n, translate=True)
+    else:
+        st.info("目前無法取得今日美股新聞（來源無資料或網路異常）。")
+
+    st.divider()
+    st.subheader(f"🌐 {dt.date.today().year} 年重要國際事件")
+    st.caption(
+        "今年以來的重大地緣政治／總經事件（例如美伊衝突、關稅戰、聯準會利率決策），"
+        "依主題分組；新聞搜尋偏重近期，較早的事件為盡力涵蓋。"
+    )
+    _grouped_events = news.get_global_events_this_year()
+    if _grouped_events:
+        for _topic, _items in _grouped_events:
+            with st.expander(f"**{_topic}**", expanded=True):
+                for _n in _items:
+                    _render_news_line(_n, translate=True)
+    else:
+        st.info("目前無法取得國際事件新聞（來源無資料或網路異常）。")
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
 with tab_overview:
@@ -359,8 +423,34 @@ with tab_overview:
                                       line=dict(width=1, dash="dot"), opacity=0.5))
             fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="Bollinger Lower",
                                       line=dict(width=1, dash="dot"), opacity=0.5))
+
+            # Linear regression trend channel
+            lr = ta.linear_regression_channel(close)
+            fig.add_trace(go.Scatter(x=df.index, y=lr["upper"], name="趨勢上軌",
+                                      line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
+            fig.add_trace(go.Scatter(x=df.index, y=lr["mid"], name="趨勢線",
+                                      line=dict(color="#e67e22", width=1.5, dash="dash"), opacity=0.9))
+            fig.add_trace(go.Scatter(x=df.index, y=lr["lower"], name="趨勢下軌",
+                                      line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
+
+            # Support / Resistance pivot levels (drawn as Scatter traces for reliability)
+            _sup_levels, _res_levels = ta.support_resistance_levels(df["High"], df["Low"], close)
+            _x0, _x1 = df.index[0], df.index[-1]
+            for lv in _sup_levels:
+                fig.add_trace(go.Scatter(
+                    x=[_x0, _x1], y=[lv, lv], mode="lines",
+                    name=f"支撐 {lv:.1f}", showlegend=True,
+                    line=dict(color="limegreen", width=1, dash="dash"), opacity=0.75,
+                ))
+            for lv in _res_levels:
+                fig.add_trace(go.Scatter(
+                    x=[_x0, _x1], y=[lv, lv], mode="lines",
+                    name=f"壓力 {lv:.1f}", showlegend=True,
+                    line=dict(color="tomato", width=1, dash="dash"), opacity=0.75,
+                ))
+
             fig.update_layout(height=600, xaxis_rangeslider_visible=False,
-                               margin=dict(t=80, b=20), legend=legend_top)
+                               margin=dict(t=80, b=20, r=80), legend=legend_top)
             _render_chart(fig, analysis_mode)
 
             vol_colors = [
@@ -397,8 +487,29 @@ with tab_overview:
                 kd_fig.update_layout(height=250, title="KD (9)", margin=dict(t=30, b=10))
                 _render_chart(kd_fig, analysis_mode)
 
-            latest = close.iloc[-1]
-            prev = close.iloc[-2] if len(close) > 1 else latest
+            adx_df = ta.adx(df["High"], df["Low"], close)
+            adx_fig = go.Figure()
+            adx_fig.add_trace(go.Scatter(x=df.index, y=adx_df["adx"], name="ADX",
+                                         line=dict(color="purple", width=2)))
+            adx_fig.add_trace(go.Scatter(x=df.index, y=adx_df["plus_di"], name="+DI",
+                                         line=dict(color="green")))
+            adx_fig.add_trace(go.Scatter(x=df.index, y=adx_df["minus_di"], name="−DI",
+                                         line=dict(color="red")))
+            adx_fig.add_hline(y=25, line_dash="dash", line_color="purple",
+                               annotation_text="25 趨勢明確", annotation_position="right")
+            adx_fig.add_hline(y=20, line_dash="dot", line_color="gray",
+                               annotation_text="20 盤整界線", annotation_position="right")
+            adx_fig.update_layout(height=220, title="ADX (14) 趨勢強度", margin=dict(t=30, b=10))
+            _render_chart(adx_fig, analysis_mode)
+
+            # yfinance occasionally returns a still-open current trading day as
+            # an all-NaN OHLC row (especially for non-US-market tickers); fall
+            # back to the last actually-priced close so a transient incomplete
+            # bar doesn't blank out 最新收盤價/建議買入賣出價 (same guard as
+            # recommend.py's _yield_price).
+            _valid_close = close.dropna()
+            latest = _valid_close.iloc[-1] if not _valid_close.empty else float("nan")
+            prev = _valid_close.iloc[-2] if len(_valid_close) > 1 else latest
             st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
                        f"{(latest / prev - 1) * 100:.2f}%")
 
@@ -592,7 +703,7 @@ with tab_compare_risk:
                 compare_tickers = [t.strip().upper() for t in raw_compare.split(",") if t.strip()]
         elif is_tw:
             compare_tickers = universe.get_twse_tickers()
-            st.caption(f"已自動帶入全部台股觀察清單，含ETF及個股（{len(compare_tickers)} 檔）。")
+            st.caption(f"已自動帶入台股觀察清單：上市成交值前200＋上市/上櫃成交量前20＋精選ETF（{len(compare_tickers)} 檔）。")
         else:
             compare_tickers = universe.get_sp500_tickers()
             st.caption(f"已自動帶入全部 S&P 500 成分股（{len(compare_tickers)} 檔）。首次掃描資料量大，"
@@ -672,13 +783,15 @@ def _render_buy_sell_section(
     require_confirm: bool = False,
 ) -> None:
     """Shared body for 買賣建議 and 存股區: both scan the same universe with
-    the same 9-factor composite formula, but offer a different subset of
-    統計期間/持有天數 presets (存股區 restricts to medium/long-horizon options
-    since it's a buy-and-hold view, not a short-term trading one), a
+    a cross-sectional multi-factor composite, but with deliberately different
+    factor sets — 買賣建議 (capital gains) scores 9 factors with 配息穩定性
+    weighted 0, while 存股區 (cash flow) passes
+    recommend.FACTOR_WEIGHTS_HOLDING: 殖利率＋配息穩定性＋填息率 carry the
+    largest combined weight and Sortino replaces Sharpe. They also offer a
+    different subset of 統計期間/持有天數 presets (存股區 restricts to
+    medium/long-horizon options since it's a buy-and-hold view) and a
     different widget key namespace (tab_key) so the two tabs' selections
-    don't collide in session_state, and optionally a different weight_table
-    (存股區 passes recommend.FACTOR_WEIGHTS_HOLDING, which leans harder into
-    基本面/配息穩定性 than the general-purpose FACTOR_WEIGHTS_BY_HORIZON).
+    don't collide in session_state.
 
     require_confirm (買賣建議 + 存股區): all 4 selectors default blank
     (index=None) and a 確定 button gates the scan — nothing runs until the
@@ -747,7 +860,11 @@ def _render_buy_sell_section(
             # the caption's 天數 is unambiguously the same as the holding period
             # used in the calculation (e.g. "1個月（21 交易日）"). Day-count labels
             # like "5天" already equal the count, so no suffix is added.
+            # Half-width "~" (e.g. "1~5天") is swapped for full-width "～":
+            # hold_display goes into st.caption markdown, where a pair of "~"
+            # renders everything between them as strikethrough.
             hold_display = hold_label if hold_label == f"{hold_days}天" else f"{hold_label}（{hold_days} 交易日）"
+            hold_display = hold_display.replace("~", "～")
         else:
             hold_days = hold_display = None
     with col_aggr:
@@ -791,6 +908,8 @@ def _render_buy_sell_section(
         "技術面": "技術面(動能+布林+SMA+型態)",
         "趨勢(價格/均線)": "價格趨勢",
         "Sharpe Ratio": "Sharpe",
+        "Sortino": "Sortino(抗跌)",
+        "填息率": "填息率",
         "估值(1/預估PE)": "估值",
         "基本面": "基本面",
         "籌碼": "籌碼面",
@@ -815,13 +934,13 @@ def _render_buy_sell_section(
 
     if show_formula_caption:
         if is_tw:
-            scope_desc = "「台股觀察清單（含 ETF 及個股）」"
+            scope_desc = "「上市成交值前 200 大」「上市成交量前 20 大」「上櫃成交量前 20 大」「精選 ETF」的聯集"
         else:
             scope_desc = "「美股近期成交量前 30 大」「S&P 500 成分股」「Nasdaq-100 成分股」「道瓊 30 成分股」的聯集"
         st.caption(
             f"- **篩選範圍**：{scope_desc}\n"
             "- **評分方式**：上列九因子計算「組內相對排序（z 分數）」，僅反映目前範圍內標的相對高低，非投資建議\n"
-            "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KD/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
+            "- **基本面**：營收/盈餘成長率、淨利率、ROE；**技術面**：RSI/KDJ/MACD；**籌碼面**：台股三大法人、美股資金流 CMF\n"
             f"- **建議買入價**：買入＝現價逢低承接（−N日跌幅中位）、賣出＝現價逢高減碼（持有 {hold_display}）\n"
             f"- **建議賣出價／獲利%**：賣出價＝進場價×(1＋N日漲幅中位)；獲利%＝賣出/進場−1\n"
             f"- **預測準確機率**：歷史上 {hold_display} 內，股價「最高觸及建議賣出價」（買）／「最低觸及」（賣）的比例\n"
@@ -830,8 +949,8 @@ def _render_buy_sell_section(
                 (
                     f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
                     "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
-                    "（回測 2026/02~06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
-                    "6~10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
+                    "（回測 2026/02～06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
+                    "6～10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
                     if hold_days <= 5 else ""
                 )
                 if allow_zhu_gate else ""
@@ -908,15 +1027,16 @@ def _render_buy_sell_section(
     # 殖利率% is a raw fraction (e.g. 0.0523) like 期間報酬率/趨勢, not a
     # pre-z-scored composite — shown as an actual percentage since "看實際
     # 殖利率高低" is the point, a z-score wouldn't be legible here.
-    # 填息率 only exists when the 殖利率+填息率篩選 was on (see fill_rate_by_ticker
-    # above) — _format_reco/_column_config below guard for its absence.
+    # 填息率 (raw fraction too) exists when 存股區's weight table scores it,
+    # or when the 殖利率+填息率篩選 was on (see fill_rate_by_ticker above) —
+    # _format_reco/_column_config below guard for its absence.
     _PCT_COLS = ["期間報酬率", "趨勢(價格/均線)", "殖利率%", "填息率"]
     # 基本面/技術面/籌碼/配息穩定性 are 組內相對 z 分數（越高＝相對越強），同列以 2 位小數顯示。
-    _PLAIN_COLS = ["Sharpe Ratio", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
+    _PLAIN_COLS = ["Sharpe Ratio", "Sortino", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                    "配息穩定性", "RSI (14)", "綜合評分"]
     _PRICE_COLS = ["建議買入價", "建議賣出價"]
     _COL_ORDER = ["建議", "綜合評分", "殖利率%", "填息率", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
-                  "估值(1/預估PE)", "基本面", "籌碼", "配息穩定性", "新聞情緒", "RSI (14)",
+                  "Sortino", "估值(1/預估PE)", "基本面", "籌碼", "配息穩定性", "新聞情緒", "RSI (14)",
                   "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
 
     def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
@@ -940,7 +1060,7 @@ def _render_buy_sell_section(
         if "綜合評分" in df:
             config["綜合評分"] = st.column_config.NumberColumn(
                 "綜合評分", format="%.2f",
-                help="九因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
+                help="多因子加權 z 分數（權重合計 100%）。為「組內相對分數」、以 0 為中位、"
                      "越高越好，無固定滿分；實務上多落在約 −2 ~ +2。",
             )
         for col in _PRICE_COLS:
@@ -1012,9 +1132,11 @@ with tab_reco:
 # ---------- Tab 4: 存股區 (long-term buy-and-hold view) ----------
 with tab_stock_hold:
     st.caption(
-        "與「買賣建議」同樣的九大因子，但權重改用存股取向的配置：著重**基本面（營收/盈餘成長、ROE、淨利率"
-        "——成長潛力）**與**配息穩定性**，淡化期間報酬率/技術面/籌碼/新聞情緒/價格趨勢等短線訊號。"
-        "「統計期間」與「持有天數」也只保留中期／長期選項（不含短線交易用的 1~15 天區間），"
+        "存股區定位為**現金流（領息）**，與買賣建議（賺資本利得）採不同公式：配息三訊號合計權重最高——"
+        "**殖利率（領多少）、配息穩定性（領得穩）、填息率（除息後60交易日內回補缺口的比例，貼息＝把本金"
+        "配還給你，直接扣分）**；風險調整報酬改用 **Sortino（只懲罰下跌波動）** 取代 Sharpe；"
+        "**基本面（營收/盈餘成長、ROE、淨利率）**維持高權重——配息的可持續性來自獲利；期間報酬率/技術面/"
+        "籌碼/新聞情緒等短線訊號壓到接近零。「統計期間」與「持有天數」也只保留中期／長期選項，"
         "定位為長期存股／逢低布局參考，而非短線進出。"
     )
     col_div_chk, col_div_yield_n, col_div_fill_n = st.columns([2, 1, 1])

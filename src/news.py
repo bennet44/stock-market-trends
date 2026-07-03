@@ -9,6 +9,7 @@ wouldn't hold up well fetched for an entire stock universe.
 """
 import datetime as dt
 import json
+import ssl
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -18,6 +19,13 @@ import streamlit as st
 
 _RSS_URL = "https://news.google.com/rss/search?q={query}&hl={hl}&gl={gl}&ceid={ceid}"
 _TIMEOUT = 6
+
+# Some Windows environments (AV/proxy-injected cert chains) fail SSL chain
+# verification for these read-only public endpoints; bypass it, same as
+# universe.py's TWSE/TPEx fetches (no sensitive data transmitted).
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 # SEC requires a descriptive User-Agent identifying the requester on every
 # request, or it returns 403 — see https://www.sec.gov/os/webmaster-faq#developers.
@@ -51,7 +59,7 @@ def _fetch_google_news(query: str, hl: str, gl: str, ceid: str, days: int) -> li
     failure."""
     url = _RSS_URL.format(query=urllib.parse.quote(query), hl=hl, gl=gl, ceid=ceid)
     try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=_TIMEOUT, context=_SSL_CTX) as resp:
             raw = resp.read()
         root = ET.fromstring(raw)
     except Exception:
@@ -136,7 +144,7 @@ def _twse_news_list() -> list[dict]:
     item's ROC-calendar "Date" (e.g. "1150618") converted to a UTC
     datetime. Returns [] on any failure."""
     try:
-        with urllib.request.urlopen(_TWSE_NEWS_LIST_URL, timeout=_TIMEOUT) as resp:
+        with urllib.request.urlopen(_TWSE_NEWS_LIST_URL, timeout=_TIMEOUT, context=_SSL_CTX) as resp:
             raw = json.loads(resp.read())
     except Exception:
         return []
@@ -176,7 +184,7 @@ def _sec_ticker_to_cik() -> dict[str, str]:
     Returns {} on any failure."""
     try:
         req = urllib.request.Request(_SEC_TICKERS_URL, headers=_SEC_HEADERS)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT, context=_SSL_CTX) as resp:
             raw = json.loads(resp.read())
         return {row["ticker"].upper(): str(row["cik_str"]).zfill(10) for row in raw.values()}
     except Exception:
@@ -192,7 +200,7 @@ def get_sec_filings(ticker: str, days: int = 4) -> list[dict]:
         return []
     try:
         req = urllib.request.Request(_SEC_SUBMISSIONS_URL.format(cik=cik), headers=_SEC_HEADERS)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
     except Exception:
         return []
@@ -241,11 +249,77 @@ def translate_to_zh_tw(text: str) -> str:
         return text
     url = _TRANSLATE_URL.format(text=urllib.parse.quote(text))
     try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=_TIMEOUT, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
         return "".join(seg[0] for seg in data[0] if seg[0])
     except Exception:
         return text
+
+
+def _strip_source_suffix(title: str) -> str:
+    """Google News RSS titles come as 'headline - Publisher'; drop the
+    publisher tail (the <source> element already carries it) so the headline
+    reads clean and the translation doesn't waste tokens on the outlet name."""
+    return title.rsplit(" - ", 1)[0] if " - " in title else title
+
+
+def _dedupe_by_title(items: list[dict], max_items: int) -> list[dict]:
+    """Drop near-duplicate headlines (same normalized title), keep newest first."""
+    seen, out = set(), []
+    for n in sorted(items, key=lambda x: x["published"], reverse=True):
+        key = _strip_source_suffix(n["title"]).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(n)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_us_week_ahead(max_items: int = 10) -> list[dict]:
+    """本週美國市場重要紀事：財經行事曆類頭條（Fed、CPI、就業報告、財報週
+    等），中英文兩路 Google News RSS 查詢合併去重，最新在前。英文標題由呼叫
+    端自行翻譯（title 欄位保留原文）。"""
+    zh = _fetch_google_news("美股 本週 聯準會 OR CPI OR 財報 OR 就業 when:7d",
+                            hl="zh-TW", gl="TW", ceid="TW:zh-Hant", days=7)
+    en = _fetch_google_news("US stock market week ahead Fed OR CPI OR jobs OR earnings when:7d",
+                            hl="en-US", gl="US", ceid="US:en", days=7)
+    return _dedupe_by_title(zh + en, max_items)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_us_market_today(max_items: int = 10) -> list[dict]:
+    """影響當天美國股市的頭條（英文來源，Google News RSS，近 2 天涵蓋美台
+    時差），去重後最新在前。翻譯由呼叫端做（可逐則顯示進度）。"""
+    en = _fetch_google_news("stock market today Dow OR Nasdaq OR 'S&P 500' when:2d",
+                            hl="en-US", gl="US", ceid="US:en", days=2)
+    return _dedupe_by_title(en, max_items)
+
+
+# 今年重要國際事件的主題查詢：每個主題各抓一路 RSS，涵蓋範圍從今年 1/1 起。
+_GLOBAL_EVENT_TOPICS = [
+    ("地緣政治／戰爭", "美伊 OR 以色列 OR 烏克蘭 戰爭 OR 衝突"),
+    ("貿易與關稅", "美國 關稅 OR 貿易戰"),
+    ("聯準會與利率", "聯準會 升息 OR 降息 OR 利率決策"),
+    ("能源與原油", "原油 OR OPEC 油價"),
+]
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_global_events_this_year(max_per_topic: int = 5) -> list[tuple[str, list[dict]]]:
+    """今年（1/1 起）重要國際事件，依主題分組的 zh-TW 頭條。Google News RSS
+    的搜尋結果偏重近期，較舊事件只能盡力涵蓋（best-effort）。"""
+    today = dt.datetime.now(dt.timezone.utc).date()
+    days_ytd = (today - dt.date(today.year, 1, 1)).days + 1
+    grouped = []
+    for topic, query in _GLOBAL_EVENT_TOPICS:
+        items = _fetch_google_news(f"{query} when:{days_ytd}d",
+                                   hl="zh-TW", gl="TW", ceid="TW:zh-Hant", days=days_ytd)
+        if items:
+            grouped.append((topic, _dedupe_by_title(items, max_per_topic)))
+    return grouped
 
 
 def recent_news_date_label(days: int = 4) -> str:

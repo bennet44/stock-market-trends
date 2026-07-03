@@ -66,7 +66,7 @@ def _trainable_factors_asof(win: pd.DataFrame) -> dict[str, float]:
     # the mean of three sub-signal z-scores. For ranking it's monotonic enough.
     tech = np.nanmean([
         macd_hist / last if last else np.nan,
-        (kd["k"].iloc[-1] - kd["d"].iloc[-1]),
+        float(np.clip((kd["j"].iloc[-1] - 50) / 50, -1, 1)),  # J normalised to [-1,1]
         rsi_last - 50,
     ])
     return {

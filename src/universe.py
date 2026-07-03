@@ -1,11 +1,92 @@
 """Stock universe helpers — S&P 500/US watchlist and Taiwan stock/ETF lists."""
+import json
 import re
+import ssl
 import urllib.request
 
 import pandas as pd
 import streamlit as st
 
 from . import data_loader as dl
+
+_TWSE_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
+_TWSE_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+_TPEX_QUOTES_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+
+# Some Windows environments fail TWSE/TPEx SSL chain verification; bypass it for
+# these read-only market-data endpoints (no sensitive data transmitted).
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+
+def _fetch_json(url: str, timeout: int = 10) -> list[dict]:
+    req = urllib.request.Request(url, headers=_TWSE_HEADERS)
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _is_common_stock(code: str) -> bool:
+    return bool(code) and code.isdigit() and len(code) == 4
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_twse_top_market_cap(n: int = 200) -> list[str]:
+    """Top n TWSE stocks by daily trading value (STOCK_DAY_ALL, cached 24 h).
+
+    Uses TradeValue (成交金額) as a liquid-cap proxy — high-turnover stocks are
+    almost always the largest-cap names on the TWSE. Falls back to the curated
+    list if the API is unreachable.
+    """
+    try:
+        rows = _fetch_json(_TWSE_DAY_ALL_URL)
+        df = pd.DataFrame(rows)
+        df = df[df["Code"].apply(_is_common_stock)].copy()
+        df["_tv"] = pd.to_numeric(
+            df["TradeValue"].astype(str).str.replace(",", ""), errors="coerce"
+        )
+        df = df.dropna(subset=["_tv"]).sort_values("_tv", ascending=False)
+        return [f"{c}.TW" for c in df["Code"].head(n).tolist()]
+    except Exception:
+        return _TW_STOCK_TICKERS
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_twse_top_volume(n: int = 20) -> list[str]:
+    """Top n TWSE stocks by single-day trading volume (STOCK_DAY_ALL, cached 1 h)."""
+    try:
+        rows = _fetch_json(_TWSE_DAY_ALL_URL)
+        df = pd.DataFrame(rows)
+        df = df[df["Code"].apply(_is_common_stock)].copy()
+        df["_vol"] = pd.to_numeric(
+            df["TradeVolume"].astype(str).str.replace(",", ""), errors="coerce"
+        )
+        df = df.dropna(subset=["_vol"]).sort_values("_vol", ascending=False)
+        return [f"{c}.TW" for c in df["Code"].head(n).tolist()]
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tpex_top_volume(n: int = 20) -> list[str]:
+    """Top n TPEx (上櫃) stocks by trading volume (tpex_mainboard_quotes, cached 1 h)."""
+    try:
+        rows = _fetch_json(_TPEX_QUOTES_URL)
+        df = pd.DataFrame(rows)
+        # TPEx API uses 'SecuritiesCompanyCode' for the stock code
+        code_col = next((c for c in df.columns if "code" in c.lower()), None)
+        vol_col = next((c for c in df.columns if "share" in c.lower() or "volume" in c.lower()), None)
+        if code_col is None or vol_col is None:
+            return []
+        df = df[df[code_col].apply(_is_common_stock)].copy()
+        df["_vol"] = pd.to_numeric(
+            df[vol_col].astype(str).str.replace(",", ""), errors="coerce"
+        )
+        df = df.dropna(subset=["_vol"]).sort_values("_vol", ascending=False)
+        return [f"{c}.TWO" for c in df[code_col].head(n).tolist()]
+    except Exception:
+        return []
+
 
 _WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 _NASDAQ100_WIKI_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
@@ -230,11 +311,18 @@ def get_tw_company_name(ticker: str) -> str | None:
     )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_twse_tickers() -> list[str]:
-    """Taiwan universe: curated individual stocks + the live-scraped list of
-    every TWSE-listed ETF (see get_twse_etf_tickers — falls back to a small
-    curated list if that fetch fails)."""
-    return sorted(set(_TW_STOCK_TICKERS) | set(get_twse_etf_tickers()))
+    """Taiwan universe: TWSE top-200 by trading value + TWSE top-20 volume +
+    TPEx top-20 volume + curated ETFs. Falls back to the curated stock+ETF
+    lists if all live fetches fail. Shared by 買賣建議 and 存股區 so both
+    tabs scan the same universe.
+    """
+    mc200 = get_twse_top_market_cap(200)
+    twvol20 = get_twse_top_volume(20)
+    tpvol20 = get_tpex_top_volume(20)
+    combined = sorted(set(mc200) | set(twvol20) | set(tpvol20) | set(_TW_ETF_TICKERS))
+    return combined if combined else sorted(set(_TW_STOCK_TICKERS) | set(_TW_ETF_TICKERS))
 
 
 def normalize_tw_ticker(raw: str) -> str:

@@ -29,6 +29,18 @@ def sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
     return (excess.mean() / vol) * np.sqrt(TRADING_DAYS)
 
 
+def sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
+    """Sharpe 的下跌風險版本：分母只取下跌日報酬的標準差（downside deviation），
+    上漲波動不被懲罰 — 存股取向在意的是「跌的時候穩不穩」。無下跌日或資料不足
+    時回傳 NaN（交叉 z 分數會視為中性）。"""
+    excess = returns - risk_free_rate / TRADING_DAYS
+    downside = returns[returns < 0]
+    dvol = downside.std()
+    if len(downside) < 2 or dvol == 0 or np.isnan(dvol):
+        return np.nan
+    return (excess.mean() / dvol) * np.sqrt(TRADING_DAYS)
+
+
 def max_drawdown(close: pd.Series) -> float:
     cumulative = close / close.iloc[0]
     running_max = cumulative.cummax()
