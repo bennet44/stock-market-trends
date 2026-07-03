@@ -271,8 +271,10 @@ if market is None:
 is_tw = market == "台股"
 currency = "NT$" if is_tw else "$"
 
-tab_news, tab_overview, tab_reco, tab_compare_risk, tab_stock_hold, tab_fcn = st.tabs(
-    ["🌍 市場焦點", "📈 價格、技術指標與基本面", "💡 買賣建議", "🔗 多股比較與風險統計", "🏦 存股區", "📐 FCN風險評估"]
+# 多股比較與風險統計 sits to the right of FCN風險評估 (it feeds FCN inputs:
+# 波動率/相關性), so the two related tabs are adjacent at the end.
+tab_news, tab_overview, tab_reco, tab_stock_hold, tab_fcn, tab_compare_risk = st.tabs(
+    ["🌍 市場焦點", "📈 價格、技術指標與基本面", "💡 買賣建議", "🏦 存股區", "📐 FCN風險評估", "🔗 多股比較與風險統計"]
 )
 
 
@@ -327,8 +329,8 @@ with tab_news:
     st.divider()
     st.subheader(f"🌐 {dt.date.today().year} 年重要國際事件")
     st.caption(
-        "今年以來的重大地緣政治／總經事件（例如美伊衝突、關稅戰、聯準會利率決策），"
-        "依主題分組；新聞搜尋偏重近期，較早的事件為盡力涵蓋。"
+        "今年以來的重大地緣政治／總經事件大事記（例如美伊衝突、關稅戰、聯準會利率決策），"
+        "依主題分組、每個日期只留一則重點；新聞搜尋偏重近期，較早的事件為盡力涵蓋。"
     )
     _grouped_events = news.get_global_events_this_year()
     if _grouped_events:

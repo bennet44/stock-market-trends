@@ -307,10 +307,26 @@ _GLOBAL_EVENT_TOPICS = [
 ]
 
 
+def _one_per_date(items: list[dict], max_items: int) -> list[dict]:
+    """重點記錄模式：每個日曆日只留一則（取該日最新的那則），日期由新到舊。
+    讓清單讀起來像大事記，而不是同一事件多家媒體的重覆報導。"""
+    seen_dates, out = set(), []
+    for n in sorted(items, key=lambda x: x["published"], reverse=True):
+        day = n["published"].date()
+        if day in seen_dates:
+            continue
+        seen_dates.add(day)
+        out.append(n)
+        if len(out) >= max_items:
+            break
+    return out
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def get_global_events_this_year(max_per_topic: int = 5) -> list[tuple[str, list[dict]]]:
-    """今年（1/1 起）重要國際事件，依主題分組的 zh-TW 頭條。Google News RSS
-    的搜尋結果偏重近期，較舊事件只能盡力涵蓋（best-effort）。"""
+def get_global_events_this_year(max_per_topic: int = 6) -> list[tuple[str, list[dict]]]:
+    """今年（1/1 起）重要國際事件，依主題分組的 zh-TW 頭條，每主題每個日期
+    只留一則重點（先去除同標題重覆，再依日期去重）。Google News RSS 的搜尋
+    結果偏重近期，較舊事件只能盡力涵蓋（best-effort）。"""
     today = dt.datetime.now(dt.timezone.utc).date()
     days_ytd = (today - dt.date(today.year, 1, 1)).days + 1
     grouped = []
@@ -318,7 +334,8 @@ def get_global_events_this_year(max_per_topic: int = 5) -> list[tuple[str, list[
         items = _fetch_google_news(f"{query} when:{days_ytd}d",
                                    hl="zh-TW", gl="TW", ceid="TW:zh-Hant", days=days_ytd)
         if items:
-            grouped.append((topic, _dedupe_by_title(items, max_per_topic)))
+            unique = _dedupe_by_title(items, max_items=len(items))
+            grouped.append((topic, _one_per_date(unique, max_per_topic)))
     return grouped
 
 
