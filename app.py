@@ -298,8 +298,162 @@ def _render_news_line(item: dict, translate: bool = False) -> None:
         st.markdown(f"**{date_str}**　[{title}]({item['link']})　`{src}`")
 
 
-# ---------- Tab 0: 市場焦點 (US market briefing / global events) ----------
+# ---------- Tab 0: 市場焦點 (Dashboard + news) ----------
 with tab_news:
+
+    # ── 美股資金流向 ──────────────────────────────────────────────
+    st.subheader("🇺🇸 美股資金流向")
+    with st.spinner("載入美股行情…"):
+        _vix = dl.get_vix()
+        _macro_df = dl.get_macro_flow_returns()
+        _sector_df = dl.get_us_sector_returns()
+
+    # Metric row: VIX + 5 macro assets (1d change)
+    _cols_m = st.columns(6)
+    with _cols_m[0]:
+        _vix_str = f"{_vix:.1f}" if _vix is not None else "N/A"
+        _vix_level = None if _vix is None else "⚠️ 高波動" if _vix > 25 else "😌 平靜" if _vix < 15 else "😐 中性"
+        st.metric("😨 VIX 恐慌指數", _vix_str, delta=_vix_level, delta_color="off")
+    for _mi, _mrow in _macro_df.iterrows():
+        with _cols_m[int(_mi) + 1]:
+            _d1 = _mrow["return_1d"]
+            _d1_str = f"{_d1:+.2f}%" if not pd.isna(_d1) else None
+            _lc = _mrow["last_close"]
+            _lc_str = f"{_lc:,.2f}" if not pd.isna(_lc) else "N/A"
+            st.metric(_mrow["label"], _lc_str, delta=_d1_str)
+
+    # Two columns: sector bar | macro grouped bar
+    _col_s, _col_mac = st.columns([3, 2])
+    with _col_s:
+        if not _sector_df.empty and _sector_df["return_1d"].notna().any():
+            _sd = _sector_df.dropna(subset=["return_1d"]).sort_values("return_1d")
+            _fig_s = go.Figure(go.Bar(
+                x=_sd["return_1d"],
+                y=_sd["sector"],
+                orientation="h",
+                marker=dict(
+                    color=["#e66767" if r < 0 else "#3987e5" for r in _sd["return_1d"]],
+                    line=dict(width=0),
+                ),
+                text=[f"{r:+.2f}%" for r in _sd["return_1d"]],
+                textposition="outside",
+                hovertemplate="%{y}（%{customdata}）: %{x:+.2f}%<extra></extra>",
+                customdata=_sd["ticker"],
+            ))
+            _fig_s.update_layout(
+                title=dict(text="11 大類股 ETF 當日漲跌", font=dict(size=13)),
+                xaxis=dict(ticksuffix="%", zeroline=True, zerolinecolor="#383835",
+                           zerolinewidth=2, showgrid=False),
+                yaxis=dict(tickfont=dict(size=12), showgrid=False),
+                height=370, margin=dict(l=0, r=60, t=38, b=8),
+                showlegend=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(_fig_s, use_container_width=True)
+        else:
+            st.info("無法取得類股 ETF 資料。")
+
+    with _col_mac:
+        if not _macro_df.empty and _macro_df["return_1d"].notna().any():
+            _md = _macro_df.dropna(subset=["return_1d"])
+            _fig_mac = go.Figure()
+            _fig_mac.add_trace(go.Bar(
+                name="1 日",
+                x=_md["label"], y=_md["return_1d"],
+                marker=dict(color="#3987e5", line=dict(width=0)),
+                text=[f"{r:+.2f}%" for r in _md["return_1d"]],
+                textposition="outside",
+                hovertemplate="%{x} 1日: %{y:+.2f}%<extra></extra>",
+            ))
+            _fig_mac.add_trace(go.Bar(
+                name="5 日",
+                x=_md["label"], y=_md["return_5d"],
+                marker=dict(color="#199e70", line=dict(width=0)),
+                text=[f"{r:+.2f}%" if not pd.isna(r) else "" for r in _md["return_5d"]],
+                textposition="outside",
+                hovertemplate="%{x} 5日: %{y:+.2f}%<extra></extra>",
+            ))
+            _fig_mac.update_layout(
+                title=dict(text="大類資產資金輪動（漲跌%）", font=dict(size=13)),
+                barmode="group",
+                yaxis=dict(ticksuffix="%", zeroline=True, zerolinecolor="#383835",
+                           zerolinewidth=2, showgrid=False),
+                xaxis=dict(showgrid=False, tickfont=dict(size=11)),
+                height=370, margin=dict(l=0, r=60, t=38, b=8),
+                legend=dict(orientation="h", y=1.08, x=0),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(_fig_mac, use_container_width=True)
+        else:
+            st.info("無法取得大類資產資料。")
+
+    st.divider()
+
+    # ── 台股資金流向 ──────────────────────────────────────────────
+    st.subheader("🇹🇼 台股資金流向")
+    with st.spinner("載入台股法人與產業資料…"):
+        _inst_data = dl.get_twse_institutional_summary()
+        _ind_df = dl.get_tw_industry_flow()
+
+    _col_inst, _col_ind = st.columns([1, 2])
+    with _col_inst:
+        if _inst_data:
+            _inst_df = pd.DataFrame(_inst_data)
+            _fig_inst = go.Figure(go.Bar(
+                x=_inst_df["name"], y=_inst_df["net_bn"],
+                marker=dict(
+                    color=["#e66767" if v < 0 else "#3987e5" for v in _inst_df["net_bn"]],
+                    line=dict(width=0),
+                ),
+                text=[f"{v:+.1f}億" for v in _inst_df["net_bn"]],
+                textposition="outside",
+                hovertemplate="%{x}: %{y:+.1f} 億<extra></extra>",
+            ))
+            _fig_inst.update_layout(
+                title=dict(text="三大法人買賣超（今日，億元）", font=dict(size=13)),
+                yaxis=dict(ticksuffix="億", zeroline=True, zerolinecolor="#383835",
+                           zerolinewidth=2, showgrid=False),
+                xaxis=dict(showgrid=False),
+                height=320, margin=dict(l=0, r=10, t=38, b=8),
+                showlegend=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(_fig_inst, use_container_width=True)
+        else:
+            st.info("今日三大法人資料尚未更新（盤中或假日）。")
+
+    with _col_ind:
+        if not _ind_df.empty:
+            _ind_s = _ind_df.sort_values("net_score")
+            _fig_ind = go.Figure(go.Bar(
+                x=_ind_s["net_score"],
+                y=_ind_s["industry"],
+                orientation="h",
+                marker=dict(
+                    color=["#e66767" if v < 0 else "#3987e5" for v in _ind_s["net_score"]],
+                    line=dict(width=0),
+                ),
+                text=[f"{v:+d}" for v in _ind_s["net_score"]],
+                textposition="outside",
+                hovertemplate="%{y}<br>漲 %{customdata[0]} 跌 %{customdata[1]}<br>淨值=%{x}<extra></extra>",
+                customdata=_ind_s[["count_up", "count_down"]].values,
+            ))
+            _fig_ind.update_layout(
+                title=dict(text="各產業漲股數 − 跌股數", font=dict(size=13)),
+                xaxis=dict(zeroline=True, zerolinecolor="#383835",
+                           zerolinewidth=2, showgrid=False),
+                yaxis=dict(tickfont=dict(size=11), showgrid=False),
+                height=450, margin=dict(l=0, r=45, t=38, b=8),
+                showlegend=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(_fig_ind, use_container_width=True)
+        else:
+            st.info("今日產業資料尚未更新（盤中或假日）。")
+
+    st.divider()
+
+    # ── 新聞區塊 ──────────────────────────────────────────────────
     st.caption(
         "資料來源：Google News RSS（英文標題以機器翻譯轉為中文，僅供快速瀏覽，"
         "重要決策請點開原文確認）。快取 30 分鐘～6 小時自動更新。"
