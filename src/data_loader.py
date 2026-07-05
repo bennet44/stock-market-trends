@@ -162,7 +162,22 @@ _MACRO_FLOW_TICKERS: dict[str, str] = {
 _TWSE_BFI82U_URL = (
     "https://www.twse.com.tw/rwd/zh/fund/BFI82U?type=day&dayDate={date}&response=json"
 )
-_TWSE_FMTQIK_URL = "https://openapi.twse.com.tw/v1/exchangeReport/FMTQIK"
+_TWSE_MI_INDEX_URL = (
+    "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+    "?date={date}&type=ALLBUT0999&response=json"
+)
+# TWSE 上市產業別代碼 (t187ap03_L「產業別」欄位)
+_TW_INDUSTRY_NAMES: dict[str, str] = {
+    "01": "水泥", "02": "食品", "03": "塑膠", "04": "紡織纖維",
+    "05": "電機機械", "06": "電器電纜", "08": "玻璃陶瓷", "09": "造紙",
+    "10": "鋼鐵", "11": "橡膠", "12": "汽車", "14": "建材營造",
+    "15": "航運", "16": "觀光餐旅", "17": "金融保險", "18": "貿易百貨",
+    "20": "其他", "21": "化學", "22": "生技醫療", "23": "油電燃氣",
+    "24": "半導體", "25": "電腦及週邊", "26": "光電", "27": "通信網路",
+    "28": "電子零組件", "29": "電子通路", "30": "資訊服務", "31": "其他電子",
+    "35": "綠能環保", "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
+    "91": "存託憑證",
+}
 
 
 def _pct_returns(tickers: list[str]) -> pd.DataFrame:
@@ -225,52 +240,99 @@ def get_twse_institutional_summary() -> list[dict]:
             continue
         if payload.get("stat") != "OK" or not payload.get("data"):
             continue
-        # rows: [機構名稱, 買進金額(千), 賣出金額(千), 買賣差額(千)]
+        # rows: [單位名稱, 買進金額(元), 賣出金額(元), 買賣差額(元)]
         buckets: dict[str, int] = {"外資": 0, "投信": 0, "自營商": 0}
         for row in payload["data"]:
             if not row or len(row) < 4:
                 continue
             raw_name = str(row[0]).strip()
             try:
-                net_k = int(str(row[3]).replace(",", "").strip())
+                net = int(str(row[3]).replace(",", "").strip())
             except (ValueError, TypeError):
                 continue
             if "外資" in raw_name:
-                buckets["外資"] += net_k
+                buckets["外資"] += net
             elif "投信" in raw_name:
-                buckets["投信"] += net_k
+                buckets["投信"] += net
             elif "自營商" in raw_name:
-                buckets["自營商"] += net_k
-        result = [{"name": k, "net_bn": round(v / 100_000, 1)} for k, v in buckets.items()]
+                buckets["自營商"] += net
+        result = [{"name": k, "net_bn": round(v / 100_000_000, 1)} for k, v in buckets.items()]
         if any(r["net_bn"] != 0 for r in result):
             return result
     return []
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_tw_industry_flow() -> pd.DataFrame:
-    """各類股今日成交資料 from TWSE FMTQIK.
-    Returns DataFrame[industry, count_up, count_flat, count_down, net_score], or empty."""
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _get_tw_industry_codes() -> dict[str, str]:
+    """{stock code: 產業別代碼} for all TWSE-listed companies, from the same
+    上市公司基本資料 feed as get_twse_company_names. Returns {} on any failure."""
     try:
-        req = urllib.request.Request(_TWSE_FMTQIK_URL, headers=_TWSE_T86_HEADERS)
+        req = urllib.request.Request(_TWSE_COMPANY_URL, headers=_TWSE_T86_HEADERS)
         with urllib.request.urlopen(req, timeout=8) as resp:
             rows = json.loads(resp.read())
     except Exception:
+        return {}
+    return {
+        code: ind
+        for row in rows
+        if (code := (row.get("公司代號") or "").strip())
+        and (ind := (row.get("產業別") or "").strip())
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tw_industry_flow() -> pd.DataFrame:
+    """各產業今日漲跌家數, from TWSE MI_INDEX 每日收盤行情 (per-stock 漲跌(+/-))
+    grouped by 上市公司基本資料 的產業別.
+    Returns DataFrame[industry, count_up, count_flat, count_down, net_score], or empty."""
+    industry_of = _get_tw_industry_codes()
+    if not industry_of:
         return pd.DataFrame()
-    records = []
-    for row in rows:
-        name = str(row.get("類股名稱") or "").strip()
-        if not name or name == "合計":
+    today = dt.date.today()
+    for back in range(7):
+        d = today - dt.timedelta(days=back)
+        if d.weekday() >= 5:
             continue
+        url = _TWSE_MI_INDEX_URL.format(date=d.strftime("%Y%m%d"))
         try:
-            up = int(row.get("今日漲股數") or 0)
-            flat = int(row.get("今日平盤股數") or 0)
-            down = int(row.get("今日跌股數") or 0)
-        except (ValueError, TypeError):
-            up = flat = down = 0
-        records.append({"industry": name, "count_up": up, "count_flat": flat,
-                        "count_down": down, "net_score": up - down})
-    return pd.DataFrame(records) if records else pd.DataFrame()
+            req = urllib.request.Request(url, headers=_TWSE_T86_HEADERS)
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                payload = json.loads(resp.read())
+        except Exception:
+            continue
+        if payload.get("stat") != "OK":
+            continue
+        quote_table = next(
+            (t for t in payload.get("tables", [])
+             if "證券代號" in (t.get("fields") or []) and t.get("data")),
+            None,
+        )
+        if quote_table is None:
+            continue
+        sign_idx = quote_table["fields"].index("漲跌(+/-)")
+        buckets: dict[str, dict[str, int]] = {}
+        for row in quote_table["data"]:
+            if not row or len(row) <= sign_idx:
+                continue
+            ind_code = industry_of.get(str(row[0]).strip())
+            name = _TW_INDUSTRY_NAMES.get(ind_code or "")
+            if not name:
+                continue  # ETF/權證等非上市公司，或未知產業
+            sign = str(row[sign_idx])  # e.g. "<p style= color:red>+</p>"
+            b = buckets.setdefault(name, {"up": 0, "flat": 0, "down": 0})
+            if "+" in sign:
+                b["up"] += 1
+            elif "-" in sign:
+                b["down"] += 1
+            else:
+                b["flat"] += 1
+        if buckets:
+            return pd.DataFrame(
+                {"industry": name, "count_up": b["up"], "count_flat": b["flat"],
+                 "count_down": b["down"], "net_score": b["up"] - b["down"]}
+                for name, b in buckets.items()
+            )
+    return pd.DataFrame()
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
