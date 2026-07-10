@@ -74,9 +74,13 @@ _PERSIST_EXCLUDE_KEYS = {"market"}
 # reco_confirmed_/price_confirmed_ 是各分頁「確定」鈕的閘門旗標（含 _missing
 # 提示狀態），也刻意不持久化——否則一旦按過確定，旗標會被存進 localStorage，
 # 下次開啟就略過閘門、自動跑掉昂貴的掃描，違背「按確定才查詢」的設計。
+# ticker_hist_pick_ 是「查詢紀錄」下拉（選取後把代號填入輸入框的觸發器），
+# 持久化它只會讓下次開啟顯示一個過期的舊選取，故排除；紀錄本身
+# （ticker_history_）仍照常持久化。
 _PERSIST_EXCLUDE_PREFIXES = (
     "show_buy_", "show_sell_",
     "reco_confirmed_", "price_confirmed_", "compare_confirmed_", "fcn_confirmed_",
+    "ticker_hist_pick_",
 )
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
@@ -595,20 +599,30 @@ with tab_overview:
         _pt_shadow = f"price_ticker_value_{'tw' if is_tw else 'us'}"
         if _pt_key not in st.session_state:
             st.session_state[_pt_key] = st.session_state.get(_pt_shadow) or default_ticker
-        # Successfully queried codes are remembered (localStorage round-trip)
-        # and offered as dropdown suggestions — typing filters them, and
-        # accept_new_options still lets a brand-new code through. The current
-        # session value is merged in so restoring a code that has since left
-        # the history can't raise "value not in options".
+        # Plain text input (commits on blur, so 打完字直接按確定 works) plus a
+        # separate 查詢紀錄 dropdown beside it: successfully queried codes are
+        # remembered (localStorage round-trip), and picking one fills the text
+        # field via on_change. An accept_new_options selectbox was tried here
+        # first, but typed text only commits on Enter/click — clicking 確定
+        # right after typing silently kept the previous code.
         _hist_key = f"ticker_history_{'tw' if is_tw else 'us'}"
-        _pt_options = sorted(set(
-            (st.session_state.get(_hist_key) or [])
-            + [st.session_state[_pt_key], default_ticker]
-        ))
-        raw_primary = (st.selectbox(
-            ticker_label, _pt_options, key=_pt_key, accept_new_options=True,
-            placeholder="輸入代號，或從查過的代號中選取",
-        ) or "").strip().upper() or default_ticker
+        _pick_key = f"ticker_hist_pick_{'tw' if is_tw else 'us'}"
+
+        def _fill_from_history():
+            _sel = st.session_state.get(_pick_key)
+            if _sel:
+                st.session_state[_pt_key] = _sel
+
+        _col_in, _col_hist = st.columns([3, 2])
+        with _col_in:
+            raw_primary = st.text_input(ticker_label, key=_pt_key).strip().upper() or default_ticker
+        with _col_hist:
+            st.selectbox(
+                "查詢紀錄", st.session_state.get(_hist_key) or [],
+                index=None, key=_pick_key, on_change=_fill_from_history,
+                placeholder="選取查過的代號",
+                help="查詢成功的代號會記錄在這裡；選取後自動填入左側輸入框，再按「確定」查詢。",
+            )
         st.session_state[_pt_shadow] = raw_primary
     with col_period:
         period_label = st.selectbox(
@@ -659,7 +673,7 @@ with tab_overview:
             # family gets its own checkbox — off means not drawn at all (no
             # legend slot either). Defaults keep the most-read overlays only.
             _mk = "tw" if is_tw else "us"
-            _cb_mode, _cb_sma, _cb_bb, _cb_trend, _cb_sr = st.columns([2, 1, 1, 1, 1])
+            _cb_mode, _cb_sma, _cb_bb, _cb_trend, _cb_sr, _cb_pat = st.columns([2, 1, 1, 1, 1, 1])
             with _cb_mode:
                 analysis_mode = st.checkbox(
                     "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
@@ -668,7 +682,7 @@ with tab_overview:
             # Seed the default-on toggles via session_state (not value=) so
             # the localStorage restore writing the same keys doesn't trigger
             # a default-vs-state conflict warning on every rerun.
-            for _ov_key in (f"overlay_sma_{_mk}", f"overlay_sr_{_mk}"):
+            for _ov_key in (f"overlay_sma_{_mk}", f"overlay_sr_{_mk}", f"overlay_pattern_{_mk}"):
                 if _ov_key not in st.session_state:
                     st.session_state[_ov_key] = True
             with _cb_sma:
@@ -679,6 +693,14 @@ with tab_overview:
                 show_trend = st.checkbox("趨勢通道", key=f"overlay_trend_{_mk}")
             with _cb_sr:
                 show_sr = st.checkbox("支撐/壓力", key=f"overlay_sr_{_mk}")
+            with _cb_pat:
+                show_pattern = st.checkbox("形態標註", key=f"overlay_pattern_{_mk}")
+
+            # 形態辨識（K 棒 + 價格結構）— computed once here, drawn on the
+            # chart when 形態標註 is ticked and always listed in the 形態辨識
+            # section further down.
+            candle_pats = ta.candlestick_patterns(df["Open"], df["High"], df["Low"], df["Close"])
+            struct_pats = ta.chart_patterns(df["High"], df["Low"], close)
 
             # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the reverse of
             # the US green-up/red-down convention). Chart background follows the dark
@@ -741,6 +763,40 @@ with tab_overview:
                     ))
                     fig.add_annotation(x=_x1, y=lv, text=f"{lv:.1f}", showarrow=False,
                                        xanchor="left", font=dict(size=10, color="tomato"))
+            if show_pattern:
+                # 價格結構形態：pivot 點連線＋名稱標籤＋頸線虛線
+                for _spi, _sp in enumerate(struct_pats):
+                    _px = [df.index[i] for i, _ in _sp["points"]]
+                    _py = [p for _, p in _sp["points"]]
+                    _sp_color = up_color if _sp["side"] == "bull" else down_color if _sp["side"] == "bear" else "#d4b106"
+                    fig.add_trace(go.Scatter(
+                        x=_px, y=_py, mode="lines+markers",
+                        name="形態", legendgroup="pattern", showlegend=_spi == 0,
+                        line=dict(color=_sp_color, width=2), marker=dict(size=7, color=_sp_color),
+                        opacity=0.9, hovertext=_sp["name"], hoverinfo="text",
+                    ))
+                    fig.add_annotation(x=_px[-1], y=_py[-1], text=_sp["name"], showarrow=False,
+                                       yshift=14 if _sp["side"] != "bull" else -14,
+                                       font=dict(size=11, color=_sp_color))
+                    if _sp.get("neckline"):
+                        fig.add_trace(go.Scatter(
+                            x=[_px[0], df.index[-1]], y=[_sp["neckline"]] * 2, mode="lines",
+                            legendgroup="pattern", showlegend=False,
+                            line=dict(color=_sp_color, width=1, dash="dot"), opacity=0.6,
+                            hovertext=f"{_sp['name']} 頸線 {_sp['neckline']:.1f}", hoverinfo="text",
+                        ))
+                # K 棒形態：對應 K 棒上/下方小標籤（偏多在下方、偏空在上方）
+                for _cp in candle_pats:
+                    _ci = _cp["bar"]
+                    _c_color = up_color if _cp["side"] == "bull" else down_color if _cp["side"] == "bear" else "#d4b106"
+                    _below = _cp["side"] == "bull"
+                    fig.add_annotation(
+                        x=df.index[_ci],
+                        y=float(df["Low"].iloc[_ci]) if _below else float(df["High"].iloc[_ci]),
+                        text=("▲" if _below else "▼" if _cp["side"] == "bear" else "◆") + _cp["name"],
+                        showarrow=False, yshift=-12 if _below else 12,
+                        font=dict(size=10, color=_c_color),
+                    )
 
             fig.update_layout(height=600, xaxis_rangeslider_visible=False,
                                margin=dict(t=80, b=20, r=80), legend=legend_top)
@@ -934,6 +990,31 @@ with tab_overview:
             else:
                 st.dataframe(tech_df, use_container_width=True, hide_index=True)
                 st.caption(f"建議說明：{tech_conclusion}")
+
+            st.markdown("##### 🕯️ 形態辨識")
+            _side_label = {"bull": "偏多", "bear": "偏空", "neutral": "中性"}
+            if not candle_pats and not struct_pats:
+                st.info("近期未偵測到明顯的 K 棒形態或價格結構形態。")
+            else:
+                if struct_pats:
+                    st.dataframe(pd.DataFrame([{
+                        "形態": p["name"],
+                        "多空": _side_label[p["side"]],
+                        "頸線": f"{p['neckline']:.1f}" if p.get("neckline") else "—",
+                        "說明": p["desc"],
+                    } for p in struct_pats]), use_container_width=True, hide_index=True)
+                if candle_pats:
+                    st.dataframe(pd.DataFrame([{
+                        "日期": df.index[p["bar"]].strftime("%m/%d"),
+                        "K棒形態": p["name"],
+                        "多空": _side_label[p["side"]],
+                        "說明": p["desc"],
+                    } for p in reversed(candle_pats)]), use_container_width=True, hide_index=True)
+                st.caption(
+                    "形態為規則式辨識（K 棒掃描近 10 個交易日；結構形態取 pivot 高低點比對 "
+                    "W底/M頭、頭肩型、三角收斂），已同步標註在上方主圖（可用「形態標註」開關）。"
+                    "形態僅供參考，需搭配量能與趨勢確認。"
+                )
 
         st.divider()
         news_date_label = news.recent_news_date_label()
