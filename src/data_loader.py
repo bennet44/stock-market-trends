@@ -77,6 +77,40 @@ def get_etf_top_holdings(ticker: str) -> pd.DataFrame:
     return holdings if holdings is not None else pd.DataFrame()
 
 
+# 台股 ETF 成份股：yfinance 的 funds_data 只涵蓋部分台股 ETF（主動式 ETF 如
+# 00997A 完全沒有），改抓 MoneyDJ 的 ETF 持股明細頁作為 fallback 資料源。
+_MONEYDJ_ETF_HOLDINGS_URL = (
+    "https://www.moneydj.com/ETF/X/Basic/Basic0007a.xdjhtm?etfid={code}.TW"
+)
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_tw_etf_holdings(ticker: str) -> pd.DataFrame:
+    """台股 ETF 持股明細 from MoneyDJ, for ETFs yfinance has no holdings for.
+    Returns DataFrame[名稱, 權重] (權重 = float %, 依權重降冪), empty on failure."""
+    import io
+
+    code = ticker.split(".")[0].strip().upper()
+    url = _MONEYDJ_ETF_HOLDINGS_URL.format(code=code)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        tables = pd.read_html(io.StringIO(html))
+    except Exception:
+        return pd.DataFrame()
+    for t in tables:
+        cols = [str(c) for c in t.columns]
+        if "股票名稱" in cols and "比例" in cols:
+            df = t[["股票名稱", "比例"]].copy()
+            df.columns = ["名稱", "權重"]
+            df["權重"] = pd.to_numeric(df["權重"], errors="coerce")
+            df = df.dropna(subset=["名稱", "權重"])
+            if not df.empty:
+                return df.sort_values("權重", ascending=False).reset_index(drop=True)
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def get_dividend_history(ticker: str) -> pd.Series:
     """Full historical per-share dividend payments (ex-div date -> amount)

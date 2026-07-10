@@ -38,6 +38,10 @@ st.markdown(
         background: #141a23; border-radius: 10px 10px 0 0; padding: 8px 18px; font-weight: 600;
       }
       .stTabs [aria-selected="true"] { background: #1c2530; border-bottom: 3px solid #3da5ff; }
+      /* Some mobile in-app browsers (LINE/FB webview) ignore the hidden
+         attribute on inactive tab panels, stacking every tab's content on
+         one page — force-hide them so only the active tab shows. */
+      div[data-baseweb="tab-panel"][hidden] { display: none !important; }
       /* Metric cards */
       div[data-testid="stMetric"] {
         background: #161c26; border: 1px solid #232b38; border-radius: 14px; padding: 14px 18px;
@@ -300,6 +304,12 @@ def _render_news_line(item: dict, translate: bool = False) -> None:
 
 # ---------- Tab 0: 市場焦點 (Dashboard + news) ----------
 with tab_news:
+    # Same pattern as the 價格技術指標 tab: charts default to no drag/pan so
+    # mobile scrolling isn't trapped by them; tick to re-enable zoom/pan.
+    _news_analysis_mode = st.checkbox(
+        "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
+        key="chart_analysis_mode_news",
+    )
 
     # ── 美股資金流向 ──────────────────────────────────────────────
     st.subheader("🇺🇸 美股資金流向")
@@ -349,7 +359,7 @@ with tab_news:
                 showlegend=False,
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(_fig_s, use_container_width=True)
+            _render_chart(_fig_s, _news_analysis_mode)
         else:
             st.info("無法取得類股 ETF 資料。")
 
@@ -383,7 +393,7 @@ with tab_news:
                 legend=dict(orientation="h", y=1.08, x=0),
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(_fig_mac, use_container_width=True)
+            _render_chart(_fig_mac, _news_analysis_mode)
         else:
             st.info("無法取得大類資產資料。")
 
@@ -418,7 +428,7 @@ with tab_news:
                 showlegend=False,
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(_fig_inst, use_container_width=True)
+            _render_chart(_fig_inst, _news_analysis_mode)
         else:
             st.info("今日三大法人資料尚未更新（盤中或假日）。")
 
@@ -447,7 +457,7 @@ with tab_news:
                 showlegend=False,
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(_fig_ind, use_container_width=True)
+            _render_chart(_fig_ind, _news_analysis_mode)
         else:
             st.info("今日產業資料尚未更新（盤中或假日）。")
 
@@ -671,7 +681,7 @@ with tab_overview:
 
             # ETF: list constituent holdings (capped — a holdings table with
             # dozens/hundreds of rows, e.g. a bond ETF, would blow out the page
-            # layout, so it's only shown when it's a short, glanceable list).
+            # layout, so it's only shown as a short, glanceable list).
             _info_primary = dl.get_company_info(primary)
             if _info_primary.get("quoteType") == "ETF":
                 holdings = dl.get_etf_top_holdings(primary)
@@ -681,6 +691,19 @@ with tab_overview:
                     hdf.columns = ["代號", "名稱", "權重"]
                     hdf["權重"] = (hdf["權重"] * 100).map(lambda v: f"{v:.2f}%")
                     st.dataframe(hdf, use_container_width=True, hide_index=True)
+                else:
+                    # yfinance has no holdings for many TW ETFs (e.g. active
+                    # ETFs like 00997A) — fall back to MoneyDJ's 持股明細.
+                    tw_holdings = dl.get_tw_etf_holdings(primary) if is_tw else pd.DataFrame()
+                    if not tw_holdings.empty:
+                        st.markdown("##### 成份股")
+                        hdf = tw_holdings.head(15).copy()
+                        hdf["權重"] = hdf["權重"].map(lambda v: f"{v:.2f}%")
+                        st.dataframe(hdf, use_container_width=True, hide_index=True)
+                        _cap = f"，僅列權重前 15 檔（共 {len(tw_holdings)} 檔）" if len(tw_holdings) > 15 else ""
+                        st.caption(f"成份股資料來源：MoneyDJ{_cap}。")
+                    else:
+                        st.caption("暫無成份股資料。")
 
             st.markdown("##### 建議買入／賣出價格參考")
             col_h1, col_a1 = st.columns(2)
