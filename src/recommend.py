@@ -106,14 +106,16 @@ FACTOR_WEIGHTS_HOLDING = {
 # Default / backward-compatible weights when no horizon is specified.
 FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 
-# Sub-weights *inside* the 技術面 factor, switched by horizon. Six sub-signals:
-# momentum (MACD/KDJ/RSI), Bollinger %B (bb), SMA bullish-alignment (sma), and
-# trend/pattern regression slope (pat). Short windows lean on momentum &
-# Bollinger; long windows lean on SMA alignment & trend. Each row sums to 1.0.
+# Sub-weights *inside* the 技術面 factor, switched by horizon. Eight sub-signals:
+# momentum (MACD/KDJ/RSI), Bollinger %B (bb), SMA bullish-alignment (sma),
+# trend regression slope (pat), ADX, and shape-pattern recognition (shape —
+# K 棒形態 + W底/M頭/頭肩/三角 via pattern_signal). Short windows lean on
+# momentum/Bollinger/patterns; long windows on SMA alignment & trend. Each row
+# sums to 1.0.
 TECH_SUBWEIGHTS_BY_HORIZON = {
-    "short":  {"macd": 0.18, "kd": 0.13, "rsi": 0.13, "bb": 0.22, "sma": 0.10, "pat": 0.14, "adx": 0.10},
-    "medium": {"macd": 0.13, "kd": 0.08, "rsi": 0.08, "bb": 0.12, "sma": 0.27, "pat": 0.17, "adx": 0.15},
-    "long":   {"macd": 0.08, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.44, "pat": 0.18, "adx": 0.18},
+    "short":  {"macd": 0.16, "kd": 0.12, "rsi": 0.12, "bb": 0.20, "sma": 0.09, "pat": 0.12, "adx": 0.09, "shape": 0.10},
+    "medium": {"macd": 0.12, "kd": 0.07, "rsi": 0.07, "bb": 0.11, "sma": 0.25, "pat": 0.15, "adx": 0.13, "shape": 0.10},
+    "long":   {"macd": 0.07, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.42, "pat": 0.17, "adx": 0.16, "shape": 0.06},
 }
 
 # The 趨勢 factor's reference moving average, by horizon: short uses the 5-day
@@ -424,6 +426,8 @@ def build_recommendation_table(
         # 型態趨勢: normalized slope of a linear fit over the window (trend strength).
         pattern = (np.polyfit(np.arange(len(close)), close.values, 1)[0] / last_close
                    if last_close and len(close) >= 2 else np.nan)
+        # 形態辨識: K 棒形態 + 價格結構形態 (W底/M頭/頭肩/三角) composite.
+        shape = pattern_signal(win["Open"], high, low, close) if "Open" in win else 0.0
 
         # 籌碼 (capital flow): TW = recent 三大法人 net normalized by shares
         # outstanding; US = Chaikin Money Flow over the window.
@@ -466,6 +470,7 @@ def build_recommendation_table(
             "_t_bb": pct_b,
             "_t_sma": sma_align,
             "_t_pat": pattern,
+            "_t_shape": shape,
             # 籌碼 raw
             "_chip": chip,
             # 配息穩定性 raw (NaN for non-payers — neutral, not penalized)
@@ -535,8 +540,9 @@ def build_recommendation_table(
         [_zscore(table[c].astype(float)) for c in ["_f_rev", "_f_earn", "_f_margin", "_f_roe"]],
         axis=1,
     ).mean(axis=1)
-    # 技術面 = horizon-weighted blend of six sub-signals' cross-sectional z-scores
-    # (momentum MACD/KD/RSI + 布林 + SMA多頭排列 + 型態趨勢); see TECH_SUBWEIGHTS_BY_HORIZON.
+    # 技術面 = horizon-weighted blend of the sub-signals' cross-sectional z-scores
+    # (momentum MACD/KD/RSI + 布林 + SMA多頭排列 + 趨勢斜率 + ADX + 形態辨識);
+    # see TECH_SUBWEIGHTS_BY_HORIZON.
     _subw = TECH_SUBWEIGHTS_BY_HORIZON.get(horizon, TECH_SUBWEIGHTS_BY_HORIZON["medium"])
     table["技術面"] = sum(
         _subw[k] * _zscore(table[f"_t_{k}"].astype(float)) for k in _subw
@@ -666,10 +672,48 @@ def horizon_for_hold_days(hold_days: int) -> str:
     return "long"
 
 
-def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: str = "medium") -> float:
+def pattern_signal(open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series) -> float:
+    """Shape-pattern score in [-1, 1] from the rule-based detectors in
+    technical.py: price structures (W底/M頭/頭肩/三角) weighted 0.6 and recent
+    candlestick patterns weighted 0.4. Bullish positive, bearish negative;
+    0.0 when nothing is detected or anything fails (neutral, matching how the
+    other sub-signals treat missing data).
+    """
+    try:
+        struct = 0.0
+        last = float(close.iloc[-1])
+        for p in ta.chart_patterns(high, low, close):
+            if p["side"] == "neutral":
+                continue
+            neck = p.get("neckline")
+            # 已突破頸線的反轉形態訊號較強（W底突破=+1.0、形成中=+0.5，空頭鏡像）
+            if p["side"] == "bull":
+                struct += 1.0 if (neck and last > neck) else 0.5
+            else:
+                struct -= 1.0 if (neck and last < neck) else 0.5
+        struct = float(np.clip(struct, -1, 1))
+
+        candle = 0.0
+        n = len(close)
+        for p in ta.candlestick_patterns(open_, high, low, close, lookback=5):
+            if p["side"] == "neutral":
+                continue
+            recency = 1.0 - (n - 1 - p["bar"]) / 5  # 今日=1.0，5 天前≈0
+            candle += (0.5 if p["side"] == "bull" else -0.5) * max(recency, 0.0)
+        candle = float(np.clip(candle, -1, 1))
+
+        return float(np.clip(0.6 * struct + 0.4 * candle, -1, 1))
+    except Exception:
+        return 0.0
+
+
+def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: str = "medium",
+                   open_: pd.Series | None = None) -> float:
     """Per-stock "how bullish" score in roughly [-1, 1], a horizon-weighted blend
-    of six self-contained (absolute, not cross-sectional) technical signals —
-    the same six that make up the 技術面 factor. Positive = technically bullish.
+    of self-contained (absolute, not cross-sectional) technical signals — the
+    same ones that make up the 技術面 factor. Positive = technically bullish.
+    The shape-pattern signal needs open prices, so it's only included when
+    `open_` is provided (the weight renormalization below absorbs its absence).
     Returns 0.0 (neutral) when nothing can be computed (e.g. too few bars).
     """
     if len(close) < 2:
@@ -699,6 +743,8 @@ def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: s
     if last:
         slope = np.polyfit(np.arange(len(close)), close.values, 1)[0]
         sigs["pat"] = float(np.tanh(slope / last * len(close)))
+    if open_ is not None:
+        sigs["shape"] = pattern_signal(open_, high, low, close)
 
     subw = TECH_SUBWEIGHTS_BY_HORIZON.get(horizon, TECH_SUBWEIGHTS_BY_HORIZON["medium"])
     wsum = sum(subw[k] for k in sigs)
@@ -708,7 +754,8 @@ def technical_bias(close: pd.Series, high: pd.Series, low: pd.Series, horizon: s
 
 
 def technical_analysis_brief(close: pd.Series, high: pd.Series, low: pd.Series,
-                              horizon: str = "medium") -> tuple[pd.DataFrame, str]:
+                              horizon: str = "medium",
+                              open_: pd.Series | None = None) -> tuple[pd.DataFrame, str]:
     """Per-indicator technical readout for Page 1's "技術分析" table: each row's
     現況/狀態/說明, plus a one-line 結論建議 derived from the same bias used to
     nudge price targets (technical_bias) — so the table's conclusion always
@@ -768,7 +815,7 @@ def technical_analysis_brief(close: pd.Series, high: pd.Series, low: pd.Series,
 
     df = pd.DataFrame(rows, columns=["指標", "現況數值", "狀態", "說明"])
 
-    bias = technical_bias(close, high, low, horizon)
+    bias = technical_bias(close, high, low, horizon, open_=open_)
     if bias >= 0.2:
         verdict = "技術面偏多"
     elif bias <= -0.2:
@@ -843,7 +890,8 @@ def add_price_targets(
         u = float(np.percentile(ups, aggressiveness)) if len(ups) else None
         d = float(np.percentile(downs, 100 - aggressiveness)) if len(downs) else None
         # Technical nudge: bullish -> bigger up target & shallower buy dip.
-        bias = technical_bias(close, high, low, horizon)
+        bias = technical_bias(close, high, low, horizon,
+                              open_=hist["Open"] if "Open" in hist else None)
         if u is not None:
             u = u * (1 + TECH_BIAS_BETA * bias)
         if d is not None:

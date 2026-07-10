@@ -921,7 +921,7 @@ with tab_overview:
             target_date = query_date + dt.timedelta(days=round(hold_days * 7 / 5))  # trading→calendar
             st.caption(
                 "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
-                "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/型態+動能〕微調)；"
+                "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/趨勢/形態辨識+動能〕微調)；"
                 "預測準確機率＝路徑式回測（持有期內最高/最低觸及的實測比例）。"
                 f"依過去 1 年、持有 {hold_disp1} 估算，"
                 f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
@@ -937,9 +937,10 @@ with tab_overview:
             ups, downs = fwd_returns[fwd_returns > 0], fwd_returns[fwd_returns < 0]
             up_move = float(np.percentile(ups, aggr_pct)) if not ups.empty else None
             down_move = float(np.percentile(downs, 100 - aggr_pct)) if not downs.empty else None
-            # Technical nudge (布林/SMA多頭/型態 + 動能), same as the 買賣建議 formula.
+            # Technical nudge (布林/SMA多頭/趨勢/形態辨識 + 動能), same as the 買賣建議 formula.
             _bias = recommend.technical_bias(pt_close, pt_high, pt_low,
-                                             recommend.horizon_for_hold_days(hold_days))
+                                             recommend.horizon_for_hold_days(hold_days),
+                                             open_=pt["Open"] if "Open" in pt else None)
             if up_move is not None:
                 up_move *= (1 + recommend.TECH_BIAS_BETA * _bias)
             if down_move is not None:
@@ -984,7 +985,8 @@ with tab_overview:
         if not df.empty:
             st.markdown("##### 技術分析")
             tech_df, tech_conclusion = recommend.technical_analysis_brief(
-                close, df["High"], df["Low"], recommend.horizon_for_hold_days(hold_days))
+                close, df["High"], df["Low"], recommend.horizon_for_hold_days(hold_days),
+                open_=df["Open"] if "Open" in df else None)
             if tech_df.empty:
                 st.info("資料不足，無法計算技術指標。")
             else:
@@ -1352,7 +1354,7 @@ def _render_buy_sell_section(
             + "\n"
             f"**公式**（u＝{hold_display}上漲報酬〔依目標積極度取百分位，中性=中位數〕、d＝下跌報酬〔同〕〔d<0〕；"
             "並依技術訊號微調：u→u×(1+0.4×技術偏多度)、d→d×(1−0.4×技術偏多度)，"
-            "技術偏多度由 布林/SMA多頭/型態+動能 依持有天數加權）：\n"
+            "技術偏多度由 布林/SMA多頭/趨勢/形態辨識+動能 依持有天數加權）：\n"
             "1. 建議買入價＝現價×(1+d)〔買〕／ 現價×(1+u)〔賣〕\n"
             "2. 建議賣出價＝現價×(1+u)〔買〕／ 現價×(1+d)〔賣〕\n"
             "3. 獲利%＝建議賣出價 / 建議買入價 − 1\n"
