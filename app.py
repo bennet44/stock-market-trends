@@ -654,10 +654,31 @@ with tab_overview:
             bb = ta.bollinger_bands(close)
 
             st.caption("提示：將滑鼠移到圖上（手機點一下 K 棒）即可看到當天開盤／最高／最低／收盤價，不需開啟下方分析模式。")
-            analysis_mode = st.checkbox(
-                "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
-                key=f"chart_analysis_mode_{'tw' if is_tw else 'us'}",
-            )
+            # Overlay toggles: the full stack (SMA×3 + 布林×2 + 趨勢×3 + 支撐/壓力
+            # ×4) buried the candles under 12+ legend items, so each line
+            # family gets its own checkbox — off means not drawn at all (no
+            # legend slot either). Defaults keep the most-read overlays only.
+            _mk = "tw" if is_tw else "us"
+            _cb_mode, _cb_sma, _cb_bb, _cb_trend, _cb_sr = st.columns([2, 1, 1, 1, 1])
+            with _cb_mode:
+                analysis_mode = st.checkbox(
+                    "📊 啟用圖表分析模式（可縮放、拖曳查看細節；行動裝置上頁面滑動會變得較不順手）",
+                    key=f"chart_analysis_mode_{_mk}",
+                )
+            # Seed the default-on toggles via session_state (not value=) so
+            # the localStorage restore writing the same keys doesn't trigger
+            # a default-vs-state conflict warning on every rerun.
+            for _ov_key in (f"overlay_sma_{_mk}", f"overlay_sr_{_mk}"):
+                if _ov_key not in st.session_state:
+                    st.session_state[_ov_key] = True
+            with _cb_sma:
+                show_sma = st.checkbox("均線", key=f"overlay_sma_{_mk}")
+            with _cb_bb:
+                show_bb = st.checkbox("布林通道", key=f"overlay_bb_{_mk}")
+            with _cb_trend:
+                show_trend = st.checkbox("趨勢通道", key=f"overlay_trend_{_mk}")
+            with _cb_sr:
+                show_sr = st.checkbox("支撐/壓力", key=f"overlay_sr_{_mk}")
 
             # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the reverse of
             # the US green-up/red-down convention). Chart background follows the dark
@@ -672,38 +693,54 @@ with tab_overview:
                 increasing_line_color=up_color, increasing_fillcolor=up_color,
                 decreasing_line_color=down_color, decreasing_fillcolor=down_color,
             ))
-            fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
-            fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
-            fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
-            fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="Bollinger Upper",
-                                      line=dict(width=1, dash="dot"), opacity=0.5))
-            fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="Bollinger Lower",
-                                      line=dict(width=1, dash="dot"), opacity=0.5))
-
-            # Linear regression trend channel
-            lr = ta.linear_regression_channel(close)
-            fig.add_trace(go.Scatter(x=df.index, y=lr["upper"], name="趨勢上軌",
-                                      line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
-            fig.add_trace(go.Scatter(x=df.index, y=lr["mid"], name="趨勢線",
-                                      line=dict(color="#e67e22", width=1.5, dash="dash"), opacity=0.9))
-            fig.add_trace(go.Scatter(x=df.index, y=lr["lower"], name="趨勢下軌",
-                                      line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
-
-            # Support / Resistance pivot levels (drawn as Scatter traces for reliability)
-            _sup_levels, _res_levels = ta.support_resistance_levels(df["High"], df["Low"], close)
-            _x0, _x1 = df.index[0], df.index[-1]
-            for lv in _sup_levels:
-                fig.add_trace(go.Scatter(
-                    x=[_x0, _x1], y=[lv, lv], mode="lines",
-                    name=f"支撐 {lv:.1f}", showlegend=True,
-                    line=dict(color="limegreen", width=1, dash="dash"), opacity=0.75,
-                ))
-            for lv in _res_levels:
-                fig.add_trace(go.Scatter(
-                    x=[_x0, _x1], y=[lv, lv], mode="lines",
-                    name=f"壓力 {lv:.1f}", showlegend=True,
-                    line=dict(color="tomato", width=1, dash="dash"), opacity=0.75,
-                ))
+            if show_sma:
+                fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
+                fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
+                fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
+            if show_bb:
+                # One legend entry for the pair (legendgroup): clicking it
+                # toggles both bands at once.
+                fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="布林通道",
+                                          legendgroup="bb",
+                                          line=dict(width=1, dash="dot"), opacity=0.5))
+                fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="布林通道",
+                                          legendgroup="bb", showlegend=False,
+                                          line=dict(width=1, dash="dot"), opacity=0.5))
+            if show_trend:
+                # Linear regression trend channel — one legend entry for all 3 lines.
+                lr = ta.linear_regression_channel(close)
+                fig.add_trace(go.Scatter(x=df.index, y=lr["mid"], name="趨勢通道",
+                                          legendgroup="trend",
+                                          line=dict(color="#e67e22", width=1.5, dash="dash"), opacity=0.9))
+                fig.add_trace(go.Scatter(x=df.index, y=lr["upper"], name="趨勢通道",
+                                          legendgroup="trend", showlegend=False,
+                                          line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
+                fig.add_trace(go.Scatter(x=df.index, y=lr["lower"], name="趨勢通道",
+                                          legendgroup="trend", showlegend=False,
+                                          line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
+            if show_sr:
+                # Support / Resistance pivot levels, trimmed to the 2 nearest
+                # to the current price each. One legend entry per side; the
+                # price of each line sits as a small label at its right end
+                # (the legend no longer enumerates values).
+                _sup_levels, _res_levels = ta.support_resistance_levels(df["High"], df["Low"], close)
+                _x0, _x1 = df.index[0], df.index[-1]
+                for _si, lv in enumerate(_sup_levels[:2]):
+                    fig.add_trace(go.Scatter(
+                        x=[_x0, _x1], y=[lv, lv], mode="lines",
+                        name="支撐", legendgroup="support", showlegend=_si == 0,
+                        line=dict(color="limegreen", width=1, dash="dash"), opacity=0.75,
+                    ))
+                    fig.add_annotation(x=_x1, y=lv, text=f"{lv:.1f}", showarrow=False,
+                                       xanchor="left", font=dict(size=10, color="limegreen"))
+                for _ri, lv in enumerate(_res_levels[:2]):
+                    fig.add_trace(go.Scatter(
+                        x=[_x0, _x1], y=[lv, lv], mode="lines",
+                        name="壓力", legendgroup="resistance", showlegend=_ri == 0,
+                        line=dict(color="tomato", width=1, dash="dash"), opacity=0.75,
+                    ))
+                    fig.add_annotation(x=_x1, y=lv, text=f"{lv:.1f}", showarrow=False,
+                                       xanchor="left", font=dict(size=10, color="tomato"))
 
             fig.update_layout(height=600, xaxis_rangeslider_visible=False,
                                margin=dict(t=80, b=20, r=80), legend=legend_top)
