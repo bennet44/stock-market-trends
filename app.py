@@ -278,7 +278,7 @@ currency = "NT$" if is_tw else "$"
 # 多股比較與風險統計 sits to the right of FCN風險評估 (it feeds FCN inputs:
 # 波動率/相關性), so the two related tabs are adjacent at the end.
 tab_news, tab_overview, tab_reco, tab_stock_hold, tab_fcn, tab_compare_risk = st.tabs(
-    ["🌍 市場焦點", "📈 價格、技術指標與基本面", "💡 買賣建議", "🏦 存股區", "📐 FCN風險評估", "🔗 多股比較與風險統計"]
+    ["🌍 市場焦點", "📈 個股資訊", "💡 買賣建議", "🏦 存股區", "📐 FCN風險評估", "🔗 多股比較與風險統計"]
 )
 
 
@@ -300,6 +300,66 @@ def _render_news_line(item: dict, translate: bool = False) -> None:
             st.caption(f"　原文：{title}")
     else:
         st.markdown(f"**{date_str}**　[{title}]({item['link']})　`{src}`")
+
+
+def _us_flow_summary(vix, macro_df, sector_df) -> str | None:
+    """Rule-based one-paragraph takeaway under the 美股資金流向 charts.
+    Each clause is skipped when its data is missing; returns None if all are."""
+    parts = []
+    if vix is not None:
+        mood = "高波動（市場恐慌）" if vix > 25 else "平靜" if vix < 15 else "中性"
+        parts.append(f"VIX {vix:.1f}，市場情緒{mood}")
+    if macro_df is not None and not macro_df.empty:
+        r = {row["ticker"]: row["return_1d"] for _, row in macro_df.iterrows()}
+        stocks = [v for v in (r.get("SPY"), r.get("QQQ")) if pd.notna(v)]
+        havens = [v for v in (r.get("TLT"), r.get("GLD")) if pd.notna(v)]
+        if stocks and havens:
+            s_up, h_up = max(stocks) > 0, max(havens) > 0
+            if s_up and not h_up:
+                parts.append("資金偏向風險資產（股漲、債金弱），risk-on")
+            elif h_up and not s_up:
+                parts.append("資金流向避險資產（債/金漲、股弱），risk-off")
+            elif s_up and h_up:
+                parts.append("股與避險資產齊漲，資金充沛但方向分歧")
+            else:
+                parts.append("股與避險資產齊跌，觀望氣氛濃")
+    if sector_df is not None and not sector_df.empty:
+        sd = sector_df.dropna(subset=["return_1d"])
+        if not sd.empty:
+            n_up = int((sd["return_1d"] > 0).sum())
+            best = sd.loc[sd["return_1d"].idxmax()]
+            worst = sd.loc[sd["return_1d"].idxmin()]
+            parts.append(
+                f"11 大類股中 {n_up} 漲 {len(sd) - n_up} 跌，"
+                f"最強 {best['sector']}（{best['return_1d']:+.2f}%）、"
+                f"最弱 {worst['sector']}（{worst['return_1d']:+.2f}%）"
+            )
+    return "；".join(parts) + "。" if parts else None
+
+
+def _tw_flow_summary(inst_data, ind_df) -> str | None:
+    """Rule-based one-paragraph takeaway under the 台股資金流向 charts."""
+    parts = []
+    if inst_data:
+        total = sum(d["net_bn"] for d in inst_data)
+        direction = "買超" if total > 0 else "賣超"
+        detail = "、".join(
+            f"{d['name']}{'買超' if d['net_bn'] > 0 else '賣超'} {abs(d['net_bn']):,.1f} 億"
+            for d in inst_data
+        )
+        parts.append(f"三大法人合計{direction} {abs(total):,.1f} 億元（{detail}）")
+    if ind_df is not None and not ind_df.empty:
+        n_up = int((ind_df["net_score"] > 0).sum())
+        n_down = int((ind_df["net_score"] < 0).sum())
+        best = ind_df.loc[ind_df["net_score"].idxmax()]
+        worst = ind_df.loc[ind_df["net_score"].idxmin()]
+        breadth = "普漲格局" if n_up >= len(ind_df) * 0.7 else "普跌格局" if n_down >= len(ind_df) * 0.7 else "漲跌互見"
+        parts.append(
+            f"{len(ind_df)} 個產業中 {n_up} 個偏漲、{n_down} 個偏跌，{breadth}，"
+            f"最強 {best['industry']}（漲-跌 {best['net_score']:+d} 家）、"
+            f"最弱 {worst['industry']}（{worst['net_score']:+d} 家）"
+        )
+    return "；".join(parts) + "。" if parts else None
 
 
 # ---------- Tab 0: 市場焦點 (Dashboard + news) ----------
@@ -397,6 +457,10 @@ with tab_news:
         else:
             st.info("無法取得大類資產資料。")
 
+    _us_summary = _us_flow_summary(_vix, _macro_df, _sector_df)
+    if _us_summary:
+        st.info(f"📝 總結：{_us_summary}")
+
     st.divider()
 
     # ── 台股資金流向 ──────────────────────────────────────────────
@@ -460,6 +524,10 @@ with tab_news:
             _render_chart(_fig_ind, _news_analysis_mode)
         else:
             st.info("今日產業資料尚未更新（盤中或假日）。")
+
+    _tw_summary = _tw_flow_summary(_inst_data, _ind_df)
+    if _tw_summary:
+        st.info(f"📝 總結：{_tw_summary}")
 
     st.divider()
 
@@ -527,7 +595,20 @@ with tab_overview:
         _pt_shadow = f"price_ticker_value_{'tw' if is_tw else 'us'}"
         if _pt_key not in st.session_state:
             st.session_state[_pt_key] = st.session_state.get(_pt_shadow) or default_ticker
-        raw_primary = st.text_input(ticker_label, key=_pt_key).strip().upper() or default_ticker
+        # Successfully queried codes are remembered (localStorage round-trip)
+        # and offered as dropdown suggestions — typing filters them, and
+        # accept_new_options still lets a brand-new code through. The current
+        # session value is merged in so restoring a code that has since left
+        # the history can't raise "value not in options".
+        _hist_key = f"ticker_history_{'tw' if is_tw else 'us'}"
+        _pt_options = sorted(set(
+            (st.session_state.get(_hist_key) or [])
+            + [st.session_state[_pt_key], default_ticker]
+        ))
+        raw_primary = (st.selectbox(
+            ticker_label, _pt_options, key=_pt_key, accept_new_options=True,
+            placeholder="輸入代號，或從查過的代號中選取",
+        ) or "").strip().upper() or default_ticker
         st.session_state[_pt_shadow] = raw_primary
     with col_period:
         period_label = st.selectbox(
@@ -559,6 +640,15 @@ with tab_overview:
         if df.empty:
             st.error(f"找不到 {primary} 的資料，請確認代號是否正確。")
         else:
+            # Remember the validated code (data came back for it) so the
+            # ticker selectbox can suggest it on later visits. TW codes are
+            # stored bare (no .TW/.TWO — matching how they're typed); capped
+            # so localStorage doesn't grow without bound.
+            _hist_code = primary.split(".")[0] if is_tw else primary
+            _hist = st.session_state.get(_hist_key) or []
+            if _hist_code not in _hist:
+                st.session_state[_hist_key] = sorted(set(_hist + [_hist_code]))[-50:]
+
             close = df["Close"]
             sma5, sma10, sma20 = ta.sma(close, 5), ta.sma(close, 10), ta.sma(close, 20)
             bb = ta.bollinger_bands(close)
@@ -992,10 +1082,17 @@ def _render_buy_sell_section(
                  "「今年至今(YTD)」則為今年 1 月 1 日至今。",
         )
     with col_topn:
-        top_n = st.selectbox(
-            "建議買賣標的數量 (Top N)", [1, 5, 10, 15],
-            index=None if require_confirm else 1, key=f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
-        )
+        _topn_key = f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
+        # Drop a stale persisted value from the old selectbox widget (None or
+        # out of the 1–30 range) so the number_input doesn't raise on restore.
+        _topn_saved = st.session_state.get(_topn_key)
+        if _topn_key in st.session_state and (
+                not isinstance(_topn_saved, (int, float)) or not 1 <= _topn_saved <= 30):
+            st.session_state.pop(_topn_key)
+        top_n = int(st.number_input(
+            "建議買賣標的數量 (Top N)", min_value=1, max_value=30, value=15, step=1,
+            key=_topn_key,
+        ))
         # 買/賣 are mutually exclusive (checking one unchecks the other) rather
         # than independent checkboxes, so the table always shows exactly one
         # side — 買 checked by default. Enforced via on_change since Streamlit
@@ -1067,9 +1164,9 @@ def _render_buy_sell_section(
                 dividend_screen, dividend_top_yield, dividend_top_fill)
         if not _confirm_gate(
             _gate_key, _sig, _pressed,
-            missing=None in (period_label, top_n, hold_label, aggr_label3),
-            info_msg="請選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。",
-            warning_msg="請完整選擇「統計期間」「建議買賣標的數量」「持有天數」「目標積極度」，再按「確定」開始查詢。",
+            missing=None in (period_label, hold_label, aggr_label3),
+            info_msg="請選擇「統計期間」「持有天數」「目標積極度」並填「建議買賣標的數量」，再按「確定」開始查詢。",
+            warning_msg="請完整選擇「統計期間」「持有天數」「目標積極度」，再按「確定」開始查詢。",
         ):
             return
 
