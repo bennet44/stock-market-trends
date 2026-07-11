@@ -18,6 +18,10 @@ Scope / honesty notes:
   optimized to split the remainder.
 - Always evaluate out-of-sample (walk_forward): train weights on a past window,
   measure Rank IC on a later window the optimizer never saw.
+- 技術面 is modelled here as a single 3-signal momentum proxy (see
+  _trainable_factors_asof), NOT the live model's 8-sub-signal weighted blend —
+  so changes to recommend.TECH_SUBWEIGHTS_BY_HORIZON are outside this
+  harness's coverage and cannot be validated by it.
 
 This module is offline research tooling — it is not imported by app.py. Run it
 via train_weights.py (repo root) where network access works.
@@ -62,8 +66,11 @@ def _trainable_factors_asof(win: pd.DataFrame) -> dict[str, float]:
     kd = ta.kd(high, low, close)
     rsi_last = ta.rsi(close).iloc[-1]
     cmf = ta.chaikin_money_flow(high, low, close, vol, window=min(20, max(2, len(win) - 1)))
-    # 技術面 here is a single pre-combined momentum proxy; in the live model it's
-    # the mean of three sub-signal z-scores. For ranking it's monotonic enough.
+    # 技術面 here is a single pre-combined 3-signal momentum proxy. The live
+    # model's 技術面 is an 8-sub-signal blend weighted by
+    # recommend.TECH_SUBWEIGHTS_BY_HORIZON (macd/kd/rsi/bb/sma/pat/adx/shape);
+    # this proxy is monotonic enough for ranking the factor's overall weight,
+    # but it means TECH_SUBWEIGHTS retunes are not covered by this backtest.
     tech = np.nanmean([
         macd_hist / last if last else np.nan,
         float(np.clip((kd["j"].iloc[-1] - 50) / 50, -1, 1)),  # J normalised to [-1,1]

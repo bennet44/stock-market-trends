@@ -73,10 +73,17 @@ def main() -> None:
 
     print("\n# ---- paste-ready (only adopt horizons where TRAINED WINS) ----")
     print("FACTOR_WEIGHTS_BY_HORIZON = {")
+    # The trainer keys its trend factor "趨勢(價格/SMA50)" (fixed SMA50 for a
+    # clean point-in-time panel) while recommend uses the horizon-varying
+    # "趨勢(價格/均線)"; factors the trainer doesn't model at all (配息穩定性)
+    # keep their current hand-set weight.
+    _TREND_ALIAS = {"趨勢(價格/均線)": "趨勢(價格/SMA50)"}
     for horizon, w in trained_all.items():
+        current = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
         print(f'    "{horizon}": {{')
-        for f in recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]:
-            print(f'        "{f}": {w[f]:.2f},')
+        for f in current:
+            val = w.get(f, w.get(_TREND_ALIAS.get(f, ""), current[f]))
+            print(f'        "{f}": {val:.2f},')
         print("    },")
     print("}")
 

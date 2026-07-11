@@ -16,13 +16,19 @@ from . import risk as risk_mod
 from . import technical as ta
 
 # Composite-score factor weights, switched by the chosen horizon: a 1-day scan
-# and a 5-year scan shouldn't value the same things. Short windows lean on price
-# action / news momentum and all but ignore valuation (fundamentals barely move
-# a stock in days); long windows lean on valuation and risk-adjusted return and
-# discount short-term momentum / headline sentiment. Each row sums to 1.0.
+# and a 5-year scan shouldn't value the same things. Short windows lean on
+# 籌碼 (institutional/capital flow — the single largest short weight), technical
+# signals and price momentum, and all but ignore valuation (fundamentals barely
+# move a stock in days); long windows lean on valuation and risk-adjusted
+# return and discount short-term momentum / headline sentiment. Each row sums
+# to 1.0 (enforced at import below).
 FACTOR_WEIGHTS_BY_HORIZON = {
     # 2026-07 週度回顧調整：籌碼加權、期間報酬率減權 — 回測顯示高分股集中在
     # 已大漲的動能股（回檔週修正最兇），而籌碼強的標的（如南茂）只差一點入選。
+    # 2026-07-11 train_weights 走查驗證（tw, 3y, 100檔）：short/medium 皆
+    # TRAINED WINS（OOS Rank IC 0.0231 vs 0.0119 / 0.0802 vs 0.0779），
+    # long keep current（0.0987 vs 0.1022）——本手調保留，訓練建議的更大幅
+    # 調整（如 Sharpe 加重）待更長樣本確認再採用。
     "short": {
         "期間報酬率": 0.15,
         "技術面": 0.20,
@@ -110,10 +116,11 @@ FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 
 # Sub-weights *inside* the 技術面 factor, switched by horizon. Eight sub-signals:
 # momentum (MACD/KDJ/RSI), Bollinger %B (bb), SMA bullish-alignment (sma),
-# trend regression slope (pat), ADX, and shape-pattern recognition (shape —
-# K 棒形態 + W底/M頭/頭肩/三角 via pattern_signal). Short windows lean on
-# momentum/Bollinger/patterns; long windows on SMA alignment & trend. Each row
-# sums to 1.0.
+# trend regression slope (pat — 趨勢斜率, a momentum-flavoured signal), ADX,
+# and shape-pattern recognition (shape — K 棒形態 + W底/M頭/頭肩/三角 via
+# pattern_signal; distinct from pat). Short windows lean on momentum/Bollinger
+# and shape; long windows on SMA alignment & trend slope. Each row sums to 1.0
+# (enforced at import below).
 # 2026-07 週度回顧調整：shape（形態辨識）加權，主要由 pat（趨勢斜率，與
 # 期間報酬率高度重疊的追高訊號）與動能類讓出。
 TECH_SUBWEIGHTS_BY_HORIZON = {
@@ -121,6 +128,20 @@ TECH_SUBWEIGHTS_BY_HORIZON = {
     "medium": {"macd": 0.12, "kd": 0.07, "rsi": 0.07, "bb": 0.11, "sma": 0.23, "pat": 0.13, "adx": 0.13, "shape": 0.14},
     "long":   {"macd": 0.07, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.40, "pat": 0.17, "adx": 0.16, "shape": 0.08},
 }
+
+# 每列總和必須為 1.0：composite 分數與 backtest 的 fixed/trainable 預算切分
+# 都假設總權重為 1，手調字面值時一旦失衡只會表現為悄悄歪掉的評分——在
+# import 當下就擋下來。
+for _tname, _table in (
+    ("FACTOR_WEIGHTS_BY_HORIZON", FACTOR_WEIGHTS_BY_HORIZON),
+    ("FACTOR_WEIGHTS_HOLDING", FACTOR_WEIGHTS_HOLDING),
+    ("TECH_SUBWEIGHTS_BY_HORIZON", TECH_SUBWEIGHTS_BY_HORIZON),
+):
+    for _h, _row in _table.items():
+        _s = sum(_row.values())
+        if abs(_s - 1.0) > 1e-9:
+            raise ValueError(f"{_tname}[{_h!r}] weights sum to {_s}, expected 1.0")
+del _tname, _table, _h, _row, _s
 
 # The 趨勢 factor's reference moving average, by horizon: short uses the 5-day
 # line, medium the 20-day 月線 (the "強勢股需在月線上" benchmark), long the 60-day.
