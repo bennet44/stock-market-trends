@@ -21,11 +21,13 @@ from . import technical as ta
 # a stock in days); long windows lean on valuation and risk-adjusted return and
 # discount short-term momentum / headline sentiment. Each row sums to 1.0.
 FACTOR_WEIGHTS_BY_HORIZON = {
+    # 2026-07 週度回顧調整：籌碼加權、期間報酬率減權 — 回測顯示高分股集中在
+    # 已大漲的動能股（回檔週修正最兇），而籌碼強的標的（如南茂）只差一點入選。
     "short": {
-        "期間報酬率": 0.18,
+        "期間報酬率": 0.15,
         "技術面": 0.20,
-        "籌碼": 0.18,
-        "新聞情緒": 0.15,
+        "籌碼": 0.22,
+        "新聞情緒": 0.14,
         "趨勢(價格/均線)": 0.12,
         "Sharpe Ratio": 0.07,
         "估值(1/預估PE)": 0.05,
@@ -38,10 +40,10 @@ FACTOR_WEIGHTS_BY_HORIZON = {
     # 價差的來源（成長＝基本面、便宜＝估值）。領息需求請用存股區
     # （FACTOR_WEIGHTS_HOLDING）。
     "medium": {
-        "期間報酬率": 0.17,
+        "期間報酬率": 0.15,
         "技術面": 0.15,
-        "籌碼": 0.12,
-        "新聞情緒": 0.12,
+        "籌碼": 0.15,
+        "新聞情緒": 0.11,
         "趨勢(價格/均線)": 0.10,
         "Sharpe Ratio": 0.13,
         "估值(1/預估PE)": 0.12,
@@ -49,9 +51,9 @@ FACTOR_WEIGHTS_BY_HORIZON = {
         "配息穩定性": 0.00,
     },
     "long": {
-        "期間報酬率": 0.12,
+        "期間報酬率": 0.10,
         "技術面": 0.06,
-        "籌碼": 0.06,
+        "籌碼": 0.08,
         "新聞情緒": 0.06,
         "趨勢(價格/均線)": 0.09,
         "Sharpe Ratio": 0.22,
@@ -112,10 +114,12 @@ FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 # K 棒形態 + W底/M頭/頭肩/三角 via pattern_signal). Short windows lean on
 # momentum/Bollinger/patterns; long windows on SMA alignment & trend. Each row
 # sums to 1.0.
+# 2026-07 週度回顧調整：shape（形態辨識）加權，主要由 pat（趨勢斜率，與
+# 期間報酬率高度重疊的追高訊號）與動能類讓出。
 TECH_SUBWEIGHTS_BY_HORIZON = {
-    "short":  {"macd": 0.16, "kd": 0.12, "rsi": 0.12, "bb": 0.20, "sma": 0.09, "pat": 0.12, "adx": 0.09, "shape": 0.10},
-    "medium": {"macd": 0.12, "kd": 0.07, "rsi": 0.07, "bb": 0.11, "sma": 0.25, "pat": 0.15, "adx": 0.13, "shape": 0.10},
-    "long":   {"macd": 0.07, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.42, "pat": 0.17, "adx": 0.16, "shape": 0.06},
+    "short":  {"macd": 0.14, "kd": 0.12, "rsi": 0.12, "bb": 0.18, "sma": 0.09, "pat": 0.10, "adx": 0.09, "shape": 0.16},
+    "medium": {"macd": 0.12, "kd": 0.07, "rsi": 0.07, "bb": 0.11, "sma": 0.23, "pat": 0.13, "adx": 0.13, "shape": 0.14},
+    "long":   {"macd": 0.07, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.40, "pat": 0.17, "adx": 0.16, "shape": 0.08},
 }
 
 # The 趨勢 factor's reference moving average, by horizon: short uses the 5-day
