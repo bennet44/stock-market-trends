@@ -7,6 +7,7 @@ other fetchers here (Reuters, SEC EDGAR, TWSE, MOPS) are for the
 single-ticker detail view only — they're slower/rate-limited sources that
 wouldn't hold up well fetched for an entire stock universe.
 """
+import concurrent.futures
 import datetime as dt
 import json
 import ssl
@@ -307,35 +308,88 @@ _GLOBAL_EVENT_TOPICS = [
 ]
 
 
-def _one_per_date(items: list[dict], max_items: int) -> list[dict]:
-    """重點記錄模式：每個日曆日只留一則（取該日最新的那則），日期由新到舊。
-    讓清單讀起來像大事記，而不是同一事件多家媒體的重覆報導。"""
-    seen_dates, out = set(), []
-    for n in sorted(items, key=lambda x: x["published"], reverse=True):
-        day = n["published"].date()
-        if day in seen_dates:
-            continue
-        seen_dates.add(day)
-        out.append(n)
-        if len(out) >= max_items:
-            break
-    return out
+# 事件日頭條過濾：標題須含「事件動詞」（當天發生了什麼）且不含「分析詞」
+# （回顧/評論/展望類文章）——大事記只收事件發生當日的報導。
+_EVENT_KEYWORDS = [
+    "發動", "空襲", "攻擊", "襲擊", "開戰", "入侵", "身亡", "遇襲", "逝世",
+    "擊斃", "爆炸", "引爆", "宣布", "宣佈", "簽署", "生效", "上路", "停火",
+    "達成", "協議", "升息", "降息", "維持利率", "制裁", "當選", "就任",
+    "通過", "否決", "暴跌", "崩盤", "暴漲", "重挫", "飆漲", "創新高",
+    "創新低", "罷工", "斷供", "封鎖", "撤軍", "談判破裂", "宣戰", "遭",
+]
+_ANALYSIS_KEYWORDS = [
+    "分析", "解讀", "解析", "回顧", "展望", "專家", "評論", "觀點", "盤點",
+    "為何", "為什麼", "怎麼看", "如何", "專訪", "社論", "一文看", "懶人包",
+    "焦點", "整理", "時間軸", "大事記", "？", "?",
+]
+
+
+def _is_event_headline(title: str) -> bool:
+    return (any(k in title for k in _EVENT_KEYWORDS)
+            and not any(k in title for k in _ANALYSIS_KEYWORDS))
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def get_global_events_this_year(max_per_topic: int = 6) -> list[tuple[str, list[dict]]]:
-    """今年（1/1 起）重要國際事件，依主題分組的 zh-TW 頭條，每主題每個日期
-    只留一則重點（先去除同標題重覆，再依日期去重）。Google News RSS 的搜尋
-    結果偏重近期，較舊事件只能盡力涵蓋（best-effort）。"""
+def get_global_events_this_year(max_per_topic: int = 12) -> list[tuple[str, list[dict]]]:
+    """今年（1/1 起）重要國際事件大事記，依主題分組、日期由舊到新。
+
+    Google News RSS 的一般搜尋偏重近期，年初事件常抓不到；改用
+    after:/before: 運算子把今年切成逐月視窗、每月各查一次，事件發生當月的
+    頭條就能真正取得。標題再經 _is_event_headline 過濾（只留事件當日報導、
+    去掉回顧/評論），每主題每月取報導量最多的至多 2 個事件日、每日一則。
+    """
     today = dt.datetime.now(dt.timezone.utc).date()
-    days_ytd = (today - dt.date(today.year, 1, 1)).days + 1
+    year_start = dt.date(today.year, 1, 1)
+    days_ytd = (today - year_start).days + 1
+
+    windows: list[tuple[dt.date, dt.date]] = []
+    m_start = year_start
+    while m_start <= today:
+        next_month = (m_start.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+        windows.append((m_start, min(next_month - dt.timedelta(days=1), today)))
+        m_start = next_month
+
+    def _fetch_window(topic: str, query: str, w0: dt.date, w1: dt.date) -> tuple[str, list[dict]]:
+        q = f"{query} after:{w0:%Y-%m-%d} before:{w1 + dt.timedelta(days=1):%Y-%m-%d}"
+        return topic, _fetch_google_news(q, hl="zh-TW", gl="TW", ceid="TW:zh-Hant", days=days_ytd)
+
+    by_topic: dict[str, list[dict]] = {topic: [] for topic, _ in _GLOBAL_EVENT_TOPICS}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(_fetch_window, topic, query, w0, w1)
+            for topic, query in _GLOBAL_EVENT_TOPICS for w0, w1 in windows
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                topic, items = future.result()
+            except Exception:
+                continue
+            by_topic[topic].extend(items)
+
     grouped = []
-    for topic, query in _GLOBAL_EVENT_TOPICS:
-        items = _fetch_google_news(f"{query} when:{days_ytd}d",
-                                   hl="zh-TW", gl="TW", ceid="TW:zh-Hant", days=days_ytd)
-        if items:
-            unique = _dedupe_by_title(items, max_items=len(items))
-            grouped.append((topic, _one_per_date(unique, max_per_topic)))
+    for topic, _ in _GLOBAL_EVENT_TOPICS:
+        filtered = [n for n in by_topic[topic] if _is_event_headline(_strip_source_suffix(n["title"]))]
+        if not filtered:
+            continue
+        # 報導量（同一天有幾家媒體發稿）當事件重要性代理：每月取量最多的
+        # 至多 2 個事件日，每日只留最新一則去重後的標題。
+        count_by_day: dict[dt.date, int] = {}
+        for n in filtered:
+            d = n["published"].date()
+            count_by_day[d] = count_by_day.get(d, 0) + 1
+        rep_by_day: dict[dt.date, dict] = {}
+        for n in sorted(_dedupe_by_title(filtered, max_items=len(filtered)),
+                        key=lambda x: x["published"], reverse=True):
+            rep_by_day.setdefault(n["published"].date(), n)
+        picked_days: list[dt.date] = []
+        for w0, _w1 in windows:
+            month_days = [d for d in rep_by_day if d.year == w0.year and d.month == w0.month]
+            month_days.sort(key=lambda d: count_by_day.get(d, 0), reverse=True)
+            picked_days.extend(month_days[:2])
+        # 超過上限時，先捨棄報導量最低的事件日
+        picked_days.sort(key=lambda d: count_by_day.get(d, 0), reverse=True)
+        picked_days = sorted(picked_days[:max_per_topic])
+        grouped.append((topic, [rep_by_day[d] for d in picked_days]))
     return grouped
 
 
