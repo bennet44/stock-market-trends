@@ -5,6 +5,8 @@ sentiment into a single cross-sectional z-score so candidates can be ranked
 against each other.
 """
 import concurrent.futures
+import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -22,6 +24,12 @@ from . import technical as ta
 # move a stock in days); long windows lean on valuation and risk-adjusted
 # return and discount short-term momentum / headline sentiment. Each row sums
 # to 1.0 (enforced at import below).
+#
+# These literals are the hand-tuned BASELINE / fallback. If a committed
+# trained_weights.json (produced by `train_weights.py --apply`) exists at the
+# repo root, it overrides matching horizon rows below — so the values actually
+# in effect for an overridden horizon live in that file, not here. Revert with
+# `git checkout trained_weights.json` (or delete it) to fall back to these.
 FACTOR_WEIGHTS_BY_HORIZON = {
     # 2026-07 週度回顧調整：籌碼加權、期間報酬率減權 — 回測顯示高分股集中在
     # 已大漲的動能股（回檔週修正最兇），而籌碼強的標的（如南茂）只差一點入選。
@@ -111,6 +119,37 @@ FACTOR_WEIGHTS_HOLDING = {
         "填息率": 0.06,
     },
 }
+_TRAINED_WEIGHTS_PATH = Path(__file__).resolve().parent.parent / "trained_weights.json"
+
+
+def _apply_trained_overrides() -> list[str]:
+    """Override FACTOR_WEIGHTS_BY_HORIZON rows in place from trained_weights.json.
+
+    The JSON is produced by `train_weights.py --apply` and only holds horizons
+    whose trained weights beat the current ones out-of-sample. A horizon row is
+    applied only if its factor-set exactly matches the baseline (guards against
+    factor drift silently dropping/adding a factor). Mutating in place keeps the
+    FACTOR_WEIGHTS alias below valid. Missing or malformed file → no-op (keep
+    the baseline literals). Returns the list of overridden horizons.
+    """
+    try:
+        # utf-8-sig tolerates a BOM a Windows editor may have added on a hand-edit.
+        data = json.loads(_TRAINED_WEIGHTS_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return []
+    applied = []
+    for h, row in (data.get("FACTOR_WEIGHTS_BY_HORIZON") or {}).items():
+        base = FACTOR_WEIGHTS_BY_HORIZON.get(h)
+        if base is None or not isinstance(row, dict) or set(row) != set(base):
+            continue  # unknown horizon or factor-set drift → keep baseline
+        base.clear()
+        base.update({k: float(v) for k, v in row.items()})
+        applied.append(h)
+    return applied
+
+
+_TRAINED_HORIZONS = _apply_trained_overrides()
+
 # Default / backward-compatible weights when no horizon is specified.
 FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
 

@@ -44,6 +44,21 @@ FIXED_FACTORS = ["估值(1/預估PE)", "基本面", "新聞情緒"]
 TREND_KEY_PANEL = "趨勢(價格/SMA50)"
 TREND_KEY_LIVE = "趨勢(價格/均線)"
 
+# Only these horizons are trained. 'long' is excluded: with a few years of
+# history there are too few non-overlapping 1-year forward windows to fit a
+# long-hold model, so long weights stay hand-tuned (valuation/Sharpe-led).
+TRAINABLE_HORIZONS = ["short", "medium"]
+# Guardrails so a small-sample fit refines the hand-tuned (朱家泓-based)
+# baseline rather than overwriting it:
+#   TRAIN_BLEND — final = α·trained + (1-α)·baseline per factor. At 0.5 every
+#     factor keeps ≥50% of its baseline (a zeroed core factor like 籌碼 can't
+#     drop below half its hand-set weight) and any extreme is pulled halfway
+#     back toward the baseline.
+#   TRAIN_FACTOR_CAP — no single trainable factor may exceed this, so one
+#     factor (e.g. Sharpe) can't dominate on an overfit sample.
+TRAIN_BLEND = 0.5
+TRAIN_FACTOR_CAP = 0.30
+
 # Per horizon: how many recent trading days form the scoring window (mirrors the
 # slicing recommend.build_recommendation_table does), and the forward holding
 # period whose return defines "did this pick work".
@@ -169,19 +184,44 @@ def combined_ic(panel: pd.DataFrame, weights: dict[str, float]) -> float:
     return per_date.dropna().mean()
 
 
+def _cap_renormalize(weights: dict[str, float], cap: float, budget: float) -> dict[str, float]:
+    """Clamp each weight to <= cap, redistributing the excess proportionally to
+    the factors still below cap, so the total stays == budget. Water-filling
+    over a handful of factors: a few passes converge (a factor pushed to cap
+    can't take more excess, so the excess flows to the rest)."""
+    w = dict(weights)
+    for _ in range(10):
+        excess = sum(v - cap for v in w.values() if v > cap)
+        if excess <= 1e-12:
+            break
+        room = {f: v for f, v in w.items() if v < cap}
+        pool = sum(room.values())
+        if pool <= 0:
+            break
+        for f in w:
+            if w[f] > cap:
+                w[f] = cap
+            elif f in room:
+                w[f] += excess * room[f] / pool
+    return w
+
+
 def optimize_weights(panel: pd.DataFrame, horizon: str) -> dict[str, float]:
-    """Learn trainable-factor weights that maximize Rank IC, numpy-only.
+    """Learn trainable-factor weights that maximize Rank IC, numpy-only, then
+    apply the TRAIN_BLEND / TRAIN_FACTOR_CAP guardrails.
 
     Regresses the per-date rank-normalized forward return on the (already
     cross-sectionally z-scored) trainable factors — the least-squares solution
     is the IC-maximizing linear combination. Coefficients are clipped to be
-    non-negative (a factor can't get a perverse negative weight) and scaled so
-    the trainable weights consume exactly the budget left after every
-    non-trainable factor in the current row keeps its current weight — so the
-    returned dict covers every factor of the live row (配息穩定性 included,
-    even if someone later makes it non-zero) and always sums to 1.0.
-    Keys use the panel's trend name (TREND_KEY_PANEL); walk_forward translates
-    to live names on return.
+    non-negative and scaled to the budget left after every non-trainable factor
+    keeps its current weight. The raw fit is then blended halfway back toward
+    the hand-tuned baseline (so a small-sample result refines rather than
+    overwrites it — see TRAIN_BLEND) and capped per factor (see
+    TRAIN_FACTOR_CAP), keeping the trainable total unchanged. The returned dict
+    covers every factor of the live row (配息穩定性 included) and sums to 1.0.
+    Guardrails live here (not in the caller) so walk_forward's trained IC is
+    measured on the weights that would actually be applied. Keys use the panel's
+    trend name (TREND_KEY_PANEL); walk_forward translates to live names.
     """
     current = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
     # Everything in the live row that isn't trained here keeps its weight.
@@ -202,10 +242,20 @@ def optimize_weights(panel: pd.DataFrame, horizon: str) -> dict[str, float]:
     if coef.sum() == 0:  # degenerate: fall back to equal split
         coef = np.ones(len(TRAINABLE_FACTORS))
     coef = coef / coef.sum() * trainable_budget
+    trained = dict(zip(TRAINABLE_FACTORS, (float(c) for c in coef)))
 
-    weights = {f: float(w) for f, w in zip(TRAINABLE_FACTORS, coef)}
-    weights.update(fixed)
-    return weights
+    # Guardrail 1 — blend halfway back to the baseline's trainable portion. The
+    # baseline trend weight lives under the live key, everything else matches.
+    # Both trained and baseline trainable parts sum to trainable_budget, so the
+    # blend does too (no renormalization needed).
+    baseline = {f: current[TREND_KEY_LIVE] if f == TREND_KEY_PANEL else current[f]
+                for f in TRAINABLE_FACTORS}
+    blended = {f: TRAIN_BLEND * trained[f] + (1 - TRAIN_BLEND) * baseline[f]
+               for f in TRAINABLE_FACTORS}
+    # Guardrail 2 — cap any single factor, redistributing to keep the budget.
+    blended = _cap_renormalize(blended, TRAIN_FACTOR_CAP, trainable_budget)
+
+    return {**blended, **fixed}
 
 
 def walk_forward(
