@@ -18,10 +18,8 @@ Scope / honesty notes:
   optimized to split the remainder.
 - Always evaluate out-of-sample (walk_forward): train weights on a past window,
   measure Rank IC on a later window the optimizer never saw.
-- 技術面 is modelled here as a single 3-signal momentum proxy (see
-  _trainable_factors_asof), NOT the live model's 8-sub-signal weighted blend —
-  so changes to recommend.TECH_SUBWEIGHTS_BY_HORIZON are outside this
-  harness's coverage and cannot be validated by it.
+- 技術面 is a simplified proxy here; TECH_SUBWEIGHTS retunes are outside this
+  harness's coverage (details at _trainable_factors_asof).
 
 This module is offline research tooling — it is not imported by app.py. Run it
 via train_weights.py (repo root) where network access works.
@@ -38,6 +36,13 @@ from . import technical as ta
 # Factors trained here (clean point-in-time); the rest keep their current weight.
 TRAINABLE_FACTORS = ["期間報酬率", "趨勢(價格/SMA50)", "技術面", "Sharpe Ratio", "籌碼"]
 FIXED_FACTORS = ["估值(1/預估PE)", "基本面", "新聞情緒"]
+# The panel keys its trend factor by the fixed SMA it is computed from, while
+# the live model (recommend.py) keys the same conceptual factor by its
+# horizon-varying name. This pair is the single place the two names are
+# bridged: walk_forward translates PANEL->LIVE on everything it returns, and
+# LIVE->PANEL when evaluating the current hand-tuned weights against the panel.
+TREND_KEY_PANEL = "趨勢(價格/SMA50)"
+TREND_KEY_LIVE = "趨勢(價格/均線)"
 
 # Per horizon: how many recent trading days form the scoring window (mirrors the
 # slicing recommend.build_recommendation_table does), and the forward holding
@@ -171,12 +176,20 @@ def optimize_weights(panel: pd.DataFrame, horizon: str) -> dict[str, float]:
     cross-sectionally z-scored) trainable factors — the least-squares solution
     is the IC-maximizing linear combination. Coefficients are clipped to be
     non-negative (a factor can't get a perverse negative weight) and scaled so
-    the five trainable weights consume the budget left after the three fixed
-    factors keep their current weights. Returns a full 8-factor weight dict.
+    the trainable weights consume exactly the budget left after every
+    non-trainable factor in the current row keeps its current weight — so the
+    returned dict covers every factor of the live row (配息穩定性 included,
+    even if someone later makes it non-zero) and always sums to 1.0.
+    Keys use the panel's trend name (TREND_KEY_PANEL); walk_forward translates
+    to live names on return.
     """
-    fixed = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
-    fixed_budget = sum(fixed[f] for f in FIXED_FACTORS)
-    trainable_budget = 1.0 - fixed_budget
+    current = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
+    # Everything in the live row that isn't trained here keeps its weight.
+    # The live trend key maps to the panel's TREND_KEY_PANEL (trainable), so
+    # it is excluded from the fixed set.
+    fixed = {f: w for f, w in current.items()
+             if f not in TRAINABLE_FACTORS and f != TREND_KEY_LIVE}
+    trainable_budget = 1.0 - sum(fixed.values())
 
     # Rank-normalize the forward return within each date to [-0.5, 0.5] so the
     # regression target is the cross-sectional ordering (what Rank IC rewards).
@@ -191,8 +204,7 @@ def optimize_weights(panel: pd.DataFrame, horizon: str) -> dict[str, float]:
     coef = coef / coef.sum() * trainable_budget
 
     weights = {f: float(w) for f, w in zip(TRAINABLE_FACTORS, coef)}
-    for f in FIXED_FACTORS:
-        weights[f] = fixed[f]
+    weights.update(fixed)
     return weights
 
 
@@ -210,6 +222,18 @@ def walk_forward(
     dates = panel.index.get_level_values("date").unique().sort_values()
     blocks = np.array_split(dates, n_splits)
     current = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
+    # Key the current row against the panel's trend column so its trend weight
+    # actually participates in the comparison (combined_ic skips keys the
+    # panel doesn't have).
+    current_panel_keyed = {
+        (TREND_KEY_PANEL if f == TREND_KEY_LIVE else f): w for f, w in current.items()
+    }
+
+    def _live_keys(w: dict[str, float] | None) -> dict[str, float] | None:
+        """Translate a panel-keyed weight dict to the live model's keys."""
+        if w is None:
+            return None
+        return {(TREND_KEY_LIVE if f == TREND_KEY_PANEL else f): v for f, v in w.items()}
 
     trained_ics, current_ics, last_weights = [], [], None
     for k in range(1, n_splits):
@@ -222,11 +246,11 @@ def walk_forward(
         w = optimize_weights(train_panel, horizon)
         last_weights = w
         trained_ics.append(combined_ic(test_panel, w))
-        current_ics.append(combined_ic(test_panel, current))
+        current_ics.append(combined_ic(test_panel, current_panel_keyed))
 
     return {
         "oos_ic_trained": float(np.nanmean(trained_ics)) if trained_ics else np.nan,
         "oos_ic_current": float(np.nanmean(current_ics)) if current_ics else np.nan,
-        "weights_last_fold": last_weights,
-        "weights_full": optimize_weights(panel, horizon),
+        "weights_last_fold": _live_keys(last_weights),
+        "weights_full": _live_keys(optimize_weights(panel, horizon)),
     }

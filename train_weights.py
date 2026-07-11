@@ -73,16 +73,21 @@ def main() -> None:
 
     print("\n# ---- paste-ready (only adopt horizons where TRAINED WINS) ----")
     print("FACTOR_WEIGHTS_BY_HORIZON = {")
-    # The trainer keys its trend factor "趨勢(價格/SMA50)" (fixed SMA50 for a
-    # clean point-in-time panel) while recommend uses the horizon-varying
-    # "趨勢(價格/均線)"; factors the trainer doesn't model at all (配息穩定性)
-    # keep their current hand-set weight.
-    _TREND_ALIAS = {"趨勢(價格/均線)": "趨勢(價格/SMA50)"}
     for horizon, w in trained_all.items():
-        current = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
+        # walk_forward returns live-model keys covering the full current row,
+        # so index strictly — a missing key means trainer/recommend factor
+        # drift and should fail loudly, not silently print a stale weight.
+        rounded = {f: round(w[f], 2)
+                   for f in recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]}
+        # Per-value rounding can drift the row sum off 1.00, which would trip
+        # recommend.py's import-time sum check when pasted — absorb the
+        # residual into the largest weight so every printed row sums to 1.00.
+        residual = round(1.0 - sum(rounded.values()), 2)
+        if residual:
+            biggest = max(rounded, key=rounded.get)
+            rounded[biggest] = round(rounded[biggest] + residual, 2)
         print(f'    "{horizon}": {{')
-        for f in current:
-            val = w.get(f, w.get(_TREND_ALIAS.get(f, ""), current[f]))
+        for f, val in rounded.items():
             print(f'        "{f}": {val:.2f},')
         print("    },")
     print("}")

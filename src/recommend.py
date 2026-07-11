@@ -129,19 +129,22 @@ TECH_SUBWEIGHTS_BY_HORIZON = {
     "long":   {"macd": 0.07, "kd": 0.04, "rsi": 0.04, "bb": 0.04, "sma": 0.40, "pat": 0.17, "adx": 0.16, "shape": 0.08},
 }
 
-# 每列總和必須為 1.0：composite 分數與 backtest 的 fixed/trainable 預算切分
-# 都假設總權重為 1，手調字面值時一旦失衡只會表現為悄悄歪掉的評分——在
-# import 當下就擋下來。
-for _tname, _table in (
-    ("FACTOR_WEIGHTS_BY_HORIZON", FACTOR_WEIGHTS_BY_HORIZON),
-    ("FACTOR_WEIGHTS_HOLDING", FACTOR_WEIGHTS_HOLDING),
-    ("TECH_SUBWEIGHTS_BY_HORIZON", TECH_SUBWEIGHTS_BY_HORIZON),
-):
-    for _h, _row in _table.items():
-        _s = sum(_row.values())
-        if abs(_s - 1.0) > 1e-9:
-            raise ValueError(f"{_tname}[{_h!r}] weights sum to {_s}, expected 1.0")
-del _tname, _table, _h, _row, _s
+def _validate_weight_tables() -> None:
+    """每列總和必須為 1.0：composite 分數與 backtest 的 fixed/trainable 預算
+    切分都假設總權重為 1，手調字面值時一旦失衡只會表現為悄悄歪掉的評分——
+    在 import 當下就擋下來。"""
+    for tname, table in (
+        ("FACTOR_WEIGHTS_BY_HORIZON", FACTOR_WEIGHTS_BY_HORIZON),
+        ("FACTOR_WEIGHTS_HOLDING", FACTOR_WEIGHTS_HOLDING),
+        ("TECH_SUBWEIGHTS_BY_HORIZON", TECH_SUBWEIGHTS_BY_HORIZON),
+    ):
+        for h, row in table.items():
+            s = sum(row.values())
+            if abs(s - 1.0) > 1e-9:
+                raise ValueError(f"{tname}[{h!r}] weights sum to {s}, expected 1.0")
+
+
+_validate_weight_tables()
 
 # The 趨勢 factor's reference moving average, by horizon: short uses the 5-day
 # line, medium the 20-day 月線 (the "強勢股需在月線上" benchmark), long the 60-day.
