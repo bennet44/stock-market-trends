@@ -143,6 +143,15 @@ _HOLD_CUSTOM_LABEL = "自訂天數…"
 _HOLDING_PERIOD_OPTIONS = {k: v for k, v in RECO_PERIOD_OPTIONS.items() if v["horizon"] != "short"}
 _HOLDING_HOLD_OPTIONS = {k: v for k, v in RECO_HOLD_OPTIONS.items() if v > 15}
 
+# 買賣建議(page 3) 的統計期間：簡化為兩檔並移除長線（long 不參與訓練，
+# 且買賣建議定位非長抱）。短期取 1 個月統計視窗、中期取 1 年（12 個月，
+# 區間上緣，前瞻報酬樣本較充足）。持有窗的細選在另一個「持有天數」下拉。
+# 存股區另用 _HOLDING_PERIOD_OPTIONS（保留長線），不受此影響。
+BUYSELL_PERIOD_OPTIONS = {
+    "短期(<30天)": {"fetch": "1mo", "lookback": None, "horizon": "short"},
+    "中期(3個月~12個月)": {"fetch": "1y", "lookback": None, "horizon": "medium"},
+}
+
 # 目標積極度 → percentile of the favorable move used for the buy/sell target
 # (中性=50 = median = the prior behaviour; 保守 closer/easier, 積極 farther).
 RECO_AGGRESSIVENESS = {"保守": 30, "中性": 50, "積極": 70}
@@ -1196,12 +1205,17 @@ def _render_buy_sell_section(
         col_period3, col_topn, col_hold, col_aggr = st.columns(4)
     with col_period3:
         period_keys = list(period_options.keys())
+        # Drop a persisted value from an old option set (e.g. 買賣建議 used to
+        # offer 1年/2年/5年) so the selectbox doesn't raise "default value not
+        # in options" after the options changed.
+        _period_key = f"period_{tab_key}_{'tw' if is_tw else 'us'}"
+        if st.session_state.get(_period_key) not in period_keys:
+            st.session_state.pop(_period_key, None)
         period_label = st.selectbox(
             "統計期間", period_keys,
             index=None if require_confirm else period_keys.index(default_period_label),
-            key=f"period_{tab_key}_{'tw' if is_tw else 'us'}",
-            help="此處選的期間，就是「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。"
-                 "「今年至今(YTD)」則為今年 1 月 1 日至今。",
+            key=_period_key,
+            help="此處選的期間，就是「期間報酬率」涵蓋的區段：從最近一個交易日往回推算。",
         )
     with col_topn:
         _topn_key = f"topn_{tab_key}_{'tw' if is_tw else 'us'}"
@@ -1521,7 +1535,7 @@ def _render_buy_sell_section(
 with tab_reco:
     _render_buy_sell_section(
         is_tw, currency, "tab3",
-        RECO_PERIOD_OPTIONS, "1年",
+        BUYSELL_PERIOD_OPTIONS, "中期(3個月~12個月)",
         RECO_HOLD_OPTIONS, "1~5天",
         allow_zhu_gate=True, header="基金經理人觀點：建議買入 / 賣出",
         require_confirm=True,
