@@ -135,24 +135,30 @@ def main() -> None:
             print("  (long 不採用：資料不足以穩健擬合長線持有，權重維持手調)")
         elif better:
             wins[horizon] = trained_all[horizon]
-        print("Trained weights (full panel):")
-        for f, w in sorted(wf["weights_full"].items(), key=lambda kv: -kv[1]):
-            print(f"    {f}: {w:.3f}")
-        print()
+        print()  # 訓練前/後 並排表格集中在最後一次列出（見下方）
 
-    # ---- 訓練前/後 因子權重差異（僅 TRAINED WINS 的 horizon）----
+    # ---- 訓練前/後 因子權重並排差異表（所有可訓練 horizon，含未勝出者）----
     # "訓練前" is this market's currently-in-effect weights (baseline overlaid
-    # with any override already committed for this market), so the diff shows
-    # exactly what would change if applied.
+    # with any override already committed for this market); "訓練後" is the row
+    # just trained. Every trainable horizon (short/medium) is shown with its
+    # verdict so you can always compare — only TRAINED WINS rows are offered for
+    # apply (a losing row would degrade out-of-sample, so it's shown but not
+    # adopted). long isn't trained, so it never appears here.
     current_market = recommend.weights_for(args.market == "tw")
-    if not wins:
-        print(f"\n沒有任何 horizon 在樣本外贏過 {args.market.upper()} 現行權重，無可套用的變更。")
-        return
+    shown = [h for h in ["short", "medium", "long"]
+             if h in trained_all and h in backtest.TRAINABLE_HORIZONS]
+    if shown:
+        print(f"\n# ===== 訓練前/後 因子權重差異（{args.market.upper()}）=====")
+        for horizon in shown:
+            # 純文字 verdict：Windows 主控台常是 cp950，emoji（如 ✅）會觸發
+            # UnicodeEncodeError 讓整支中斷，因此不用任何 emoji。
+            verdict = "TRAINED WINS（可套用）" if horizon in wins else "keep current（未勝出，不套用）"
+            print(f"\n---- {horizon}：{verdict} ----")
+            _print_diff(current_market[horizon], trained_all[horizon])
 
-    print(f"\n# ===== 訓練前/後 因子權重差異（{args.market.upper()}，TRAINED WINS）=====")
-    for horizon in sorted(wins):
-        print(f"\n---- {horizon} ----")
-        _print_diff(current_market[horizon], wins[horizon])
+    if not wins:
+        print(f"\n以上皆未在樣本外贏過 {args.market.upper()} 現行權重 → 無可套用的變更。")
+        return
 
     if args.apply:
         apply = True
