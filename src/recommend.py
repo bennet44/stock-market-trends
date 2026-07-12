@@ -25,11 +25,12 @@ from . import technical as ta
 # return and discount short-term momentum / headline sentiment. Each row sums
 # to 1.0 (enforced at import below).
 #
-# These literals are the hand-tuned BASELINE / fallback. If a committed
-# trained_weights.json (produced by `train_weights.py --apply`) exists at the
-# repo root, it overrides matching horizon rows below — so the values actually
-# in effect for an overridden horizon live in that file, not here. Revert with
-# `git checkout trained_weights.json` (or delete it) to fall back to these.
+# These literals are the hand-tuned BASELINE / fallback, shared by both markets
+# as the common starting point. If a committed trained_weights.json (produced by
+# train_weights.py) exists at the repo root, each market's trained rows overlay
+# this baseline for that market only — see weights_for(). The values actually in
+# effect for an overridden (market, horizon) live in that file, not here. Revert
+# with `git checkout trained_weights.json` (or delete it) to fall back to these.
 FACTOR_WEIGHTS_BY_HORIZON = {
     # 2026-07 週度回顧調整：籌碼加權、期間報酬率減權 — 回測顯示高分股集中在
     # 已大漲的動能股（回檔週修正最兇），而籌碼強的標的（如南茂）只差一點入選。
@@ -122,33 +123,59 @@ FACTOR_WEIGHTS_HOLDING = {
 _TRAINED_WEIGHTS_PATH = Path(__file__).resolve().parent.parent / "trained_weights.json"
 
 
-def _apply_trained_overrides() -> list[str]:
-    """Override FACTOR_WEIGHTS_BY_HORIZON rows in place from trained_weights.json.
-
-    The JSON is produced by `train_weights.py --apply` and only holds horizons
-    whose trained weights beat the current ones out-of-sample. A horizon row is
-    applied only if its factor-set exactly matches the baseline (guards against
-    factor drift silently dropping/adding a factor). Mutating in place keeps the
-    FACTOR_WEIGHTS alias below valid. Missing or malformed file → no-op (keep
-    the baseline literals). Returns the list of overridden horizons.
+def _trained_rows_for(market: str) -> dict[str, dict]:
+    """The trained FACTOR_WEIGHTS_BY_HORIZON rows stored for one market
+    ("tw"/"us"), or {} if none. trained_weights.json is produced by
+    train_weights.py; the current schema keys the file by market
+    ({"tw": {"FACTOR_WEIGHTS_BY_HORIZON": {...}}, "us": {...}}) so 台股/美股
+    train independently without overwriting each other. A legacy flat file
+    ({"FACTOR_WEIGHTS_BY_HORIZON": {...}, "_meta": {"market": ...}}) from before
+    markets were split is still honored, for whichever market its _meta names.
+    Missing or malformed file → {} (baseline only).
     """
     try:
         # utf-8-sig tolerates a BOM a Windows editor may have added on a hand-edit.
         data = json.loads(_TRAINED_WEIGHTS_PATH.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return []
-    applied = []
-    for h, row in (data.get("FACTOR_WEIGHTS_BY_HORIZON") or {}).items():
-        base = FACTOR_WEIGHTS_BY_HORIZON.get(h)
-        if base is None or not isinstance(row, dict) or set(row) != set(base):
+        return {}
+    if "FACTOR_WEIGHTS_BY_HORIZON" in data:  # legacy flat file: one market only
+        if (data.get("_meta") or {}).get("market") != market:
+            return {}
+        return data["FACTOR_WEIGHTS_BY_HORIZON"] or {}
+    return (data.get(market) or {}).get("FACTOR_WEIGHTS_BY_HORIZON") or {}
+
+
+def _overlay_trained(base: dict[str, dict], rows: dict[str, dict]) -> dict[str, dict]:
+    """A fresh horizon→weights table: the hand-tuned `base` with each trained
+    row from `rows` swapped in. A row is applied only if its factor-set exactly
+    matches that baseline horizon's (guards against factor drift silently
+    dropping/adding a factor); unknown horizons are ignored. `base` is never
+    mutated — each market gets its own copy, so the shared baseline stays intact
+    as the fallback and as backtest's comparison reference.
+    """
+    out = {h: dict(row) for h, row in base.items()}
+    for h, row in rows.items():
+        target = out.get(h)
+        if target is None or not isinstance(row, dict) or set(row) != set(target):
             continue  # unknown horizon or factor-set drift → keep baseline
-        base.clear()
-        base.update({k: float(v) for k, v in row.items()})
-        applied.append(h)
-    return applied
+        out[h] = {k: float(v) for k, v in row.items()}
+    return out
 
 
-_TRAINED_HORIZONS = _apply_trained_overrides()
+# Per-market live weight tables: the shared hand-tuned baseline specialized by
+# each market's trained overrides (台股/美股 走勢不同，各自訓練互不覆蓋).
+_WEIGHTS_BY_MARKET = {
+    m: _overlay_trained(FACTOR_WEIGHTS_BY_HORIZON, _trained_rows_for(m))
+    for m in ("tw", "us")
+}
+
+
+def weights_for(is_tw: bool) -> dict[str, dict]:
+    """The FACTOR_WEIGHTS_BY_HORIZON in effect for this market — the hand-tuned
+    baseline overlaid with the market's trained overrides (if any). This is what
+    the 買賣建議 scan weights by; 存股區 uses FACTOR_WEIGHTS_HOLDING instead."""
+    return _WEIGHTS_BY_MARKET["tw" if is_tw else "us"]
+
 
 # Default / backward-compatible weights when no horizon is specified.
 FACTOR_WEIGHTS = FACTOR_WEIGHTS_BY_HORIZON["medium"]
@@ -176,6 +203,8 @@ def _validate_weight_tables() -> None:
         ("FACTOR_WEIGHTS_BY_HORIZON", FACTOR_WEIGHTS_BY_HORIZON),
         ("FACTOR_WEIGHTS_HOLDING", FACTOR_WEIGHTS_HOLDING),
         ("TECH_SUBWEIGHTS_BY_HORIZON", TECH_SUBWEIGHTS_BY_HORIZON),
+        # Catch a hand-edited trained_weights.json row that no longer sums to 1.
+        *((f"_WEIGHTS_BY_MARKET[{m!r}]", tbl) for m, tbl in _WEIGHTS_BY_MARKET.items()),
     ):
         for h, row in table.items():
             s = sum(row.values())

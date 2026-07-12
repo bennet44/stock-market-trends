@@ -1197,7 +1197,9 @@ def _render_buy_sell_section(
     (index=None) and a 確定 button gates the scan — nothing runs until the
     user explicitly fills 統計期間/Top N/持有天數/目標積極度 and presses 確定.
     """
-    weight_table = weight_table or recommend.FACTOR_WEIGHTS_BY_HORIZON
+    # 買賣建議 passes None → weight by this market's own trained overrides
+    # (台股/美股 走勢不同，各自訓練); 存股區 passes FACTOR_WEIGHTS_HOLDING.
+    weight_table = weight_table or recommend.weights_for(is_tw)
     st.subheader(header)
     if require_confirm:
         col_period3, col_topn, col_hold, col_aggr, col_confirm2 = st.columns(5)
@@ -1345,6 +1347,10 @@ def _render_buy_sell_section(
     )
 
     if show_formula_caption:
+        st.caption(
+            "ℹ️ **持有天數＋目標積極度**：只影響下方的「建議買入／賣出價」與「預測準確機率」，"
+            "不影響上方 9 大因子的評分與排名——因子與選股只由「統計期間」決定。"
+        )
         if is_tw:
             scope_desc = "「上市成交值前 200 大」「上市成交量前 20 大」「上櫃成交量前 20 大」「精選 ETF」的聯集"
         else:

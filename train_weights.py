@@ -2,28 +2,29 @@
 
 Run this where network access works (your machine or a Streamlit Cloud shell):
 
-    python train_weights.py --market tw --years 5            # dry-run: print only
-    python train_weights.py --market tw --years 5 --apply    # write overrides
-    python train_weights.py --market us --years 5 --max-tickers 120 --apply
+    python train_weights.py --market tw --years 5            # run, review, confirm
+    python train_weights.py --market us --years 5 --max-tickers 120
 
 For each horizon (short/medium/long) it downloads price history for the market's
 universe, builds a point-in-time factor panel, reports each factor's mean Rank
 IC, and runs a walk-forward comparison of the *trained* weights vs the current
 hand-tuned weights (out-of-sample).
 
-Without --apply (default) it only prints a ready-to-paste FACTOR_WEIGHTS_BY_HORIZON
-block for review. With --apply it writes the horizons that beat the current
-weights out-of-sample ("TRAINED WINS") to trained_weights.json at the repo root,
-which src/recommend.py loads as an override layer over its hand-tuned baseline —
-so the running app picks them up on next import, with no manual copy-paste.
-The JSON is committed (git-tracked), so `git diff`/`git checkout
-trained_weights.json` reviews or reverts a training run. Note the live weight
-table is shared across markets, so re-running with a different --market
-overwrites the same horizons.
+At the end it prints a 訓練前/後 factor-weight diff for every horizon whose
+trained weights beat the current ones ("TRAINED WINS") and then, in an
+interactive terminal, asks y/N whether to apply them. Answering y (or passing
+--apply to skip the prompt, e.g. in a script) writes those horizons to
+trained_weights.json at the repo root, under this market's own section
+({"tw": {...}, "us": {...}}) — 台股/美股 走勢不同，各自訓練互不覆蓋.
+src/recommend.py overlays each market's section onto its shared hand-tuned
+baseline (see weights_for()), so the running app picks the new weights up on
+next import with no manual copy-paste. The JSON is committed (git-tracked), so
+`git diff`/`git checkout trained_weights.json` reviews or reverts a run.
 """
 import argparse
 import datetime as dt
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -49,19 +50,39 @@ def _normalized_row(weights: dict[str, float], horizon: str) -> dict[str, float]
     return rounded
 
 
-def _write_overrides(wins: dict[str, dict], meta: dict) -> None:
-    """Merge the TRAINED-WINS horizon rows into trained_weights.json, preserving
-    any horizons from earlier runs that weren't retrained this time."""
+def _write_overrides(market: str, wins: dict[str, dict], meta: dict) -> None:
+    """Merge this market's TRAINED-WINS horizon rows into trained_weights.json
+    under its own section, preserving the *other* market's section and any
+    horizons from earlier runs of this market that weren't retrained now.
+    A legacy flat file (pre per-market schema) is migrated in place first."""
     existing = {}
     if _TRAINED_WEIGHTS_PATH.exists():
         try:
-            existing = json.loads(_TRAINED_WEIGHTS_PATH.read_text(encoding="utf-8"))
+            existing = json.loads(_TRAINED_WEIGHTS_PATH.read_text(encoding="utf-8-sig"))
         except ValueError:
             existing = {}
-    existing.setdefault("FACTOR_WEIGHTS_BY_HORIZON", {}).update(wins)
-    existing["_meta"] = meta
+    # Migrate a legacy flat file ({"FACTOR_WEIGHTS_BY_HORIZON": ...}) into the
+    # per-market schema, attributing it to the market its _meta names.
+    if "FACTOR_WEIGHTS_BY_HORIZON" in existing:
+        legacy_market = (existing.get("_meta") or {}).get("market")
+        legacy = {"FACTOR_WEIGHTS_BY_HORIZON": existing.pop("FACTOR_WEIGHTS_BY_HORIZON"),
+                  "_meta": existing.pop("_meta", {})}
+        existing = {legacy_market: legacy} if legacy_market in ("tw", "us") else {}
+    section = existing.setdefault(market, {})
+    section.setdefault("FACTOR_WEIGHTS_BY_HORIZON", {}).update(wins)
+    section["_meta"] = meta
     _TRAINED_WEIGHTS_PATH.write_text(
         json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _print_diff(before: dict[str, float], after: dict[str, float]) -> None:
+    """Print a 訓練前/後 per-factor weight table, ordered by trained weight."""
+    print(f"    {'因子':<14}{'訓練前':>8}{'訓練後':>8}{'Δ':>9}")
+    for f in sorted(before, key=lambda k: -after.get(k, 0.0)):
+        b, a = before.get(f, 0.0), after.get(f, 0.0)
+        d = a - b
+        mark = "" if abs(d) < 0.005 else ("  ▲" if d > 0 else "  ▼")
+        print(f"    {f:<14}{b:>8.2f}{a:>8.2f}{d:>+9.2f}{mark}")
 
 
 def _load_prices(tickers: list[str], years: int) -> dict[str, pd.DataFrame]:
@@ -83,8 +104,8 @@ def main() -> None:
     ap.add_argument("--max-tickers", type=int, default=150,
                     help="cap universe size to keep the download tractable")
     ap.add_argument("--apply", action="store_true",
-                    help="write TRAINED-WINS horizons to trained_weights.json "
-                         "(the app's override layer) instead of only printing")
+                    help="skip the y/N confirmation and write TRAINED-WINS "
+                         "horizons to trained_weights.json (for scripts)")
     args = ap.parse_args()
 
     if args.market == "tw":
@@ -119,31 +140,42 @@ def main() -> None:
             print(f"    {f}: {w:.3f}")
         print()
 
-    print("\n# ---- paste-ready (trainable horizons; only adopt where TRAINED WINS) ----")
-    print("FACTOR_WEIGHTS_BY_HORIZON = {")
-    for horizon, rounded in trained_all.items():
-        if horizon not in backtest.TRAINABLE_HORIZONS:
-            continue  # long is not trained — keep its hand-tuned row
-        print(f'    "{horizon}": {{')
-        for f, val in rounded.items():
-            print(f'        "{f}": {val:.2f},')
-        print("    },")
-    print("}")
+    # ---- 訓練前/後 因子權重差異（僅 TRAINED WINS 的 horizon）----
+    # "訓練前" is this market's currently-in-effect weights (baseline overlaid
+    # with any override already committed for this market), so the diff shows
+    # exactly what would change if applied.
+    current_market = recommend.weights_for(args.market == "tw")
+    if not wins:
+        print(f"\n沒有任何 horizon 在樣本外贏過 {args.market.upper()} 現行權重，無可套用的變更。")
+        return
+
+    print(f"\n# ===== 訓練前/後 因子權重差異（{args.market.upper()}，TRAINED WINS）=====")
+    for horizon in sorted(wins):
+        print(f"\n---- {horizon} ----")
+        _print_diff(current_market[horizon], wins[horizon])
 
     if args.apply:
-        if wins:
-            _write_overrides(wins, {
-                "trained_at": dt.date.today().isoformat(),
-                "market": args.market,
-                "years": args.years,
-                "max_tickers": args.max_tickers,
-                "horizons": sorted(wins),
-            })
-            print(f"\n[--apply] wrote {sorted(wins)} to {_TRAINED_WEIGHTS_PATH.name} "
-                  f"(the app's override layer). Review with `git diff {_TRAINED_WEIGHTS_PATH.name}`.")
-        else:
-            print("\n[--apply] no horizon beat the current weights out-of-sample; "
-                  "nothing written.")
+        apply = True
+    elif not sys.stdin.isatty():
+        print("\n（非互動環境且未加 --apply → 僅顯示、不套用。加 --apply 可自動套用。）")
+        apply = False
+    else:
+        apply = input(
+            f"\n是否將以上 {sorted(wins)} 套用到 {args.market.upper()}？(y/N) "
+        ).strip().lower() in ("y", "yes")
+
+    if apply:
+        _write_overrides(args.market, wins, {
+            "trained_at": dt.date.today().isoformat(),
+            "market": args.market,
+            "years": args.years,
+            "max_tickers": args.max_tickers,
+            "horizons": sorted(wins),
+        })
+        print(f"\n已寫入 {sorted(wins)} 到 {_TRAINED_WEIGHTS_PATH.name}（{args.market.upper()} 區段）。"
+              f"審閱：git diff {_TRAINED_WEIGHTS_PATH.name}")
+    else:
+        print(f"\n未套用，{_TRAINED_WEIGHTS_PATH.name} 未變更。")
 
 
 if __name__ == "__main__":
