@@ -876,6 +876,55 @@ with tab_overview:
             st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
                        f"{(latest / prev - 1) * 100:.2f}%")
 
+            # 🎯 朱家泓操作判讀：把上面各零件（月線/均線/突破/放量/KD/MACD/
+            # 支撐壓力）合成一句操作結論＋進場/停損/目標。規則式仿方法論，
+            # 同一函式日後供鎖股區逐檔套用。
+            _chu = recommend.chu_verdict(df["Open"], df["High"], df["Low"], close, df["Volume"])
+            if _chu is not None:
+                st.markdown("#### 🎯 朱家泓操作判讀")
+                _lvl = _chu["verdict_level"]
+                _msg = f"**【{_chu['stage']}】** {_chu['verdict']}"
+                if _lvl in ("buy_watch", "hold_bullish"):
+                    st.success(_msg)
+                elif _lvl in ("wait_pullback", "neutral"):
+                    st.warning(_msg)
+                else:  # caution / stand_aside
+                    st.error(_msg)
+
+                def _yn(b):
+                    return "✅" if b else "—"
+
+                _tr, _sg = _chu["trend"], _chu["signal_today"]
+                _col_t, _col_s, _col_o = st.columns(3)
+                with _col_t:
+                    st.markdown(
+                        "**趨勢（生命線）**\n\n"
+                        f"- 月線MA20（{_tr['ma20']}）：{'站上 ✅' if _tr['above_ma20'] else '未站 ❌'}"
+                        f"（{'翻揚 ↗' if _tr['ma20_rising'] else '走平/下彎 →'}）\n"
+                        f"- 季線MA60（{_tr['ma60']}）：{'站上 ✅' if _tr['above_ma60'] else '未站 ❌'}\n"
+                        f"- 均線：{_tr['alignment']}"
+                    )
+                with _col_s:
+                    st.markdown(
+                        "**今日訊號（量價）**\n\n"
+                        f"- 突破濾網：{_yn(_sg['breakout'])}\n"
+                        f"- 放量確認：{_yn(_sg['volume'])}\n"
+                        f"- KD 金叉：{_yn(_sg['kd_golden'])}　MACD 翻紅：{_yn(_sg['macd_red'])}"
+                    )
+                with _col_o:
+                    _stop = f"{currency}{_chu['stop']}" if _chu["stop"] is not None else "—（未站月線，先不談進場）"
+                    _tgt = "、".join(f"{currency}{x}" for x in _chu["targets"]) or "—"
+                    st.markdown(
+                        "**操作（紀律）**\n\n"
+                        f"- 進場：{_chu['entry']}\n"
+                        f"- 停損：{_stop}\n"
+                        f"- 目標壓力：{_tgt}"
+                    )
+                if _chu["notes"]:
+                    st.caption("　".join(f"⚠ {n}" for n in _chu["notes"]))
+                st.caption("以上為規則式套用朱家泓方法論（月線生命線、量價突破、停損紀律）自動判讀，"
+                           "非本尊、非投資建議；務必自設停損、自負風險。")
+
             # ETF: list constituent holdings (capped — a holdings table with
             # dozens/hundreds of rows, e.g. a bond ETF, would blow out the page
             # layout, so it's only shown as a short, glanceable list).

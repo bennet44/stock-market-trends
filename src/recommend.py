@@ -768,6 +768,120 @@ def horizon_for_hold_days(hold_days: int) -> str:
     return "long"
 
 
+def chu_verdict(open_: pd.Series, high: pd.Series, low: pd.Series,
+                close: pd.Series, volume: pd.Series) -> dict | None:
+    """朱家泓-style operating read synthesised from the same rule-based pieces
+    the app already computes (zhu breakout gate, 放量, 均線/月線/季線, KD/MACD,
+    支撐壓力, 型態). Returns a structured verdict dict, or None if there aren't
+    enough bars (needs the 60-day 季線). This is a heuristic encoding of the
+    methodology, not the teacher — callers must show a 非投資建議 disclaimer.
+    The whole thing is data-driven off the passed OHLCV so the 鎖股區 can reuse
+    it per ticker.
+
+    verdict_level ∈ {stand_aside, caution, wait_pullback, buy_watch,
+    hold_bullish, neutral}. Returned keys: trend, signal_today, overheated,
+    entry, stop, targets, supports, stage, verdict_level, verdict, notes.
+    """
+    if len(close) < 60:
+        return None
+    c = float(close.iloc[-1])
+    prev = float(close.iloc[-2]) if len(close) > 1 else c
+    ma5 = ta.sma(close, 5).iloc[-1]
+    ma10 = ta.sma(close, 10).iloc[-1]
+    ma20 = ta.sma(close, 20)
+    ma20_now, ma20_prev = ma20.iloc[-1], ma20.iloc[-6]
+    ma60 = ta.sma(close, 60).iloc[-1]
+    if any(pd.isna(x) for x in (ma5, ma10, ma20_now, ma20_prev, ma60)):
+        return None
+    ma5, ma10, ma20_now, ma20_prev, ma60 = map(float, (ma5, ma10, ma20_now, ma20_prev, ma60))
+
+    above_ma20 = c > ma20_now
+    ma20_rising = ma20_now > ma20_prev
+    above_ma60 = c > ma60
+    if ma5 > ma10 > ma20_now:
+        alignment = "多頭排列"
+    elif ma5 < ma10 < ma20_now:
+        alignment = "空頭排列"
+    else:
+        alignment = "均線糾結"
+
+    breakout = zhu_breakout_signal(close, high)
+    vol_ok = zhu_volume_confirmed(volume)
+    kd = ta.kd(high, low, close)
+    k, d, j = (float(kd[x].iloc[-1]) for x in ("k", "d", "j"))
+    kd_golden = k >= d
+    macd_hist = float(ta.macd(close)["hist"].iloc[-1])
+    macd_red = macd_hist > 0
+    bb = ta.bollinger_bands(close)
+    bb_up, bb_lo = bb["upper"].iloc[-1], bb["lower"].iloc[-1]
+    pct_b = (c - bb_lo) / (bb_up - bb_lo) if pd.notna(bb_up) and bb_up != bb_lo else 0.5
+    day_chg = (c / prev - 1) if prev else 0.0
+    overheated = j > 90 or pct_b > 0.9 or day_chg > 0.08
+
+    sup, res = ta.support_resistance_levels(high, low, close)
+    swing_low = float(low.iloc[-20:].min())
+    targets = [round(x, 1) for x in res[:2]]
+    supports = [round(x, 1) for x in sup[:2]]
+
+    trend = {"above_ma20": above_ma20, "ma20_rising": ma20_rising,
+             "above_ma60": above_ma60, "alignment": alignment,
+             "ma20": round(ma20_now, 1), "ma60": round(ma60, 1)}
+    signal_today = {"breakout": breakout, "volume": vol_ok,
+                    "kd_golden": kd_golden, "macd_red": macd_red}
+    notes = []
+
+    # ── 朱家泓 決策樹 ─────────────────────────────────────────────
+    if not above_ma20:
+        level = "stand_aside"
+        verdict = "未站上月線（生命線），多方無立足點——空手觀望，等站上月線再看。"
+        stage = "月線之下"
+        entry = "暫不進場（待站上月線）"
+        stop = None
+    elif alignment == "空頭排列" and not ma20_rising:
+        level = "caution"
+        verdict = "雖在月線附近，但均線空頭排列、月線下彎——觀望別接刀。"
+        stage = "弱勢反彈"
+        entry = f"待均線轉多頭再看（現價 {c:.1f}）"
+        stop = round(ma20_now, 1)
+    elif breakout and vol_ok:
+        stage = "起漲/突破"
+        if overheated:
+            level = "wait_pullback"
+            verdict = "帶量突破成立，但短線過熱——別追高，等回測月線/MA5 不破再進。"
+            entry = f"回測 {ma5:.1f}（MA5）～{ma20_now:.1f}（月線）不破再進"
+        else:
+            level = "buy_watch"
+            verdict = "帶量突破起漲，可留意——回檔不破月線是買點。"
+            entry = f"現價附近或回測 {ma5:.1f}（MA5）不破"
+        stop = round(min(ma20_now, swing_low), 1)
+        notes.append("今日訊號屬『剛觸發、待確認』：回測不破才算真突破，防騙線。")
+    elif alignment == "多頭排列":
+        level = "hold_bullish"
+        verdict = "均線多頭排列、站穩月線——回檔到均線找買點，沿 MA5 移動停利。"
+        stage = "多頭延續"
+        entry = f"回檔 {ma5:.1f}（MA5）～{ma10:.1f}（MA10）找止跌買點"
+        stop = round(ma20_now, 1)
+    else:
+        level = "neutral"
+        verdict = "月線之上、均線糾結盤整——方向未明，等帶量突破再動。"
+        stage = "月線之上盤整"
+        entry = "等帶量突破盤整區再進"
+        stop = round(ma20_now, 1)
+
+    if above_ma20 and not above_ma60:
+        notes.append("尚未站上季線（中期多空分界），中期趨勢未完全轉強。")
+    if overheated and level not in ("stand_aside", "caution"):
+        notes.append(f"短線過熱（J={j:.0f}、布林%B={pct_b*100:.0f}%、今日{day_chg*100:+.1f}%），追高風險高。")
+    if alignment == "均線糾結" and level == "neutral":
+        notes.append("均線糾結、ADX 通常偏低，盤整中假突破多，等量價明確再動。")
+
+    return {
+        "trend": trend, "signal_today": signal_today, "overheated": overheated,
+        "entry": entry, "stop": stop, "targets": targets, "supports": supports,
+        "stage": stage, "verdict_level": level, "verdict": verdict, "notes": notes,
+    }
+
+
 def pattern_signal(open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series) -> float:
     """Shape-pattern score in [-1, 1] from the rule-based detectors in
     technical.py: price structures (W底/M頭/頭肩/三角) weighted 0.6 and recent
