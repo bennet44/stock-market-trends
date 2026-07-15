@@ -18,13 +18,40 @@ if *any* underlying breaches the KI level.
 All percentages here (strike_pct, ki_pct, ko_pct) are fractions of each
 underlying's own initial spot, e.g. 0.85 = 85% of spot.
 """
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 TRADING_DAYS_PER_YEAR = 252
 TRADING_DAYS_PER_MONTH = TRADING_DAYS_PER_YEAR // 12
+
+# Optional volatility-scale override produced by train_fcn.py from the real FCN
+# purchases in src/fcn_records.py. Absent/malformed file → 1.0 (no change), so
+# the app behaves exactly as before until a calibration is committed. Loaded
+# lazily each call (cheap) so a fresh `--apply` is picked up on next simulation.
+_CALIB_PATH = Path(__file__).resolve().parent.parent / "fcn_calibration.json"
+
+
+def load_calibration() -> dict:
+    """The parsed fcn_calibration.json, or {} if missing/unreadable."""
+    try:
+        return json.loads(_CALIB_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+
+
+def vol_scale() -> float:
+    """Global volatility multiplier from the committed calibration (default 1.0).
+    Clamped to a sane [0.5, 2.0] band so a hand-edited file can't blow up risk."""
+    v = load_calibration().get("vol_scale", 1.0)
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return 1.0
+    return v if 0.5 <= v <= 2.0 else 1.0
 
 
 def historical_stats(close_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -121,6 +148,14 @@ def simulate_basket(
         principal_payoff=principal_payoff,
         exit_month=exit_month,
     )
+
+
+def win_rate(stats: PathStats) -> float:
+    """Capital-safety win rate: the probability the note returns principal at par
+    — either autocalled early or held to maturity without a KI breach — i.e. you
+    are *not* assigned the worst underlying's shares at a loss. Equals
+    1 − prob_breach, since prob_breach already means "not called AND breached"."""
+    return 1.0 - stats.prob_breach
 
 
 def fair_coupon_rate(stats: PathStats) -> float:

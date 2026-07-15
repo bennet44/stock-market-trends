@@ -11,6 +11,9 @@ from streamlit_local_storage import LocalStorage
 
 from src import data_loader as dl
 from src import fcn
+from src import fcn_backtest
+from src import fcn_records
+from src import fcn_screen
 from src import news
 from src import recommend
 from src import risk
@@ -1589,168 +1592,348 @@ with tab_stock_hold:
 with tab_fcn:
     st.subheader("FCN 風險評估與條款試算")
     st.caption(
-        "- **主要輸入**：標的、敲出價、敲入價、到期日、配息率\n"
-        "- **多標的時**：若任一標的觸及下限則視為「觸及」，但只有全部標的同時達到提前出場價才提前出場\n"
-        "- **模型假設**：月配息、月觀察、固定波動率、幾何布朗運動\n"
-        "- **參數來源**：標的歷史日報酬的年化波動率與相關性\n"
-        "- **模擬結果**：提前出場機率、本金虧損機率\n"
-        "- **限制**：不含發行商報價、信用風險、手續費，為簡化估算，**僅供研究參考，非投資建議**"
+        "- **核心目標**：以「本金安全勝率」（不觸 KI、不被接到最差標的股票）為主軸，並判斷配息是否合理\n"
+        "- **多標的（worst-of）**：任一標的觸 KI 即視為觸及；需全部標的同時達 KO 才提前贖回\n"
+        "- **模型假設**：月配息、月觀察、固定波動率、幾何布朗運動、風險中性 drift\n"
+        "- **限制**：不含波動率偏斜、發行商報價/利差、信用與流動性風險、手續費；理論票息通常偏低，**僅供研究參考，非投資建議**"
     )
 
-    col_n_assets, col_tickers = st.columns([1, 3])
-    with col_n_assets:
-        n_assets = st.number_input(
-            "標的數量", min_value=1, max_value=FCN_MAX_ASSETS, value=1, step=1,
-            key=f"fcn_n_assets_{'tw' if is_tw else 'us'}",
+    _mkt = "tw" if is_tw else "us"
+    # 波動率估計：預設歷史原始（較保守）。若有實單校準檔，可選擇套用（會壓低波動率→勝率偏高、
+    # 理論票息偏低，屬 2026 多頭樣本的樂觀情境），預設不套用，避免低估「被接到股票」的風險。
+    _cal = fcn.load_calibration()
+    _cal_vs = fcn.vol_scale()
+    if _cal and _cal_vs != 1.0:
+        _vs_choice = st.radio(
+            "波動率估計",
+            ["歷史原始（較保守，預設）", f"套用實單校準 ×{_cal_vs:.2f}（偏樂觀，2026 多頭樣本）"],
+            key=f"fcn_volmode_{_mkt}", horizontal=True,
         )
-    with col_tickers:
-        # Switching 市場 only builds the *active* market's FCN widgets, so the
-        # other market's text_input (e.g. fcn_tickers_us_3) isn't rendered that
-        # run and Streamlit garbage-collects its widget state — coming back, the
-        # field would reset to the hardcoded default. Keep the last-entered value
-        # in a plain (non-widget) session_state key, which is never GC'd, and use
-        # it as the field's default so a 台股⇄美股 round-trip preserves the input.
-        # The key includes n_assets so changing 標的數量 still repopulates with
-        # that many default tickers.
-        _fcn_tickers_shadow_key = f"fcn_tickers_value_{'tw' if is_tw else 'us'}_{n_assets}"
-        fcn_default_tickers = st.session_state.get(_fcn_tickers_shadow_key) or ", ".join(
-            (["2330", "2317", "2454", "2412", "2882"] if is_tw else ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"])[:n_assets]
-        )
-        fcn_ticker_label = f"標的股票代號（共 {n_assets} 個，以「,」區隔）" + ("（台股代碼，例如 2330）" if is_tw else "")
-        fcn_raw_tickers = st.text_input(
-            fcn_ticker_label, value=fcn_default_tickers, key=f"fcn_tickers_{'tw' if is_tw else 'us'}_{n_assets}"
-        )
-        st.session_state[_fcn_tickers_shadow_key] = fcn_raw_tickers
-    fcn_tickers_input = [t.strip().upper() for t in fcn_raw_tickers.split(",") if t.strip()]
-    fcn_tickers = [universe.resolve_tw_ticker(t) for t in fcn_tickers_input] if is_tw else fcn_tickers_input
-
-    if len(fcn_tickers) != n_assets:
-        st.warning(f"已設定標的數量為 {n_assets}，但目前以「,」區隔輸入了 {len(fcn_tickers)} 個代號，請調整一致。")
+        active_vs = 1.0 if _vs_choice.startswith("歷史原始") else _cal_vs
+        if active_vs != 1.0:
+            st.caption(f"校準來源：{_cal.get('_meta', {}).get('n_resolved', '?')} 筆已結束實單；"
+                       "校準壓低波動率會使勝率偏高、理論票息偏低，請當樂觀情境對照。")
     else:
-        _mkt_suffix = "tw" if is_tw else "us"
-        col_tenor, col_strike, col_ko = st.columns(3)
-        with col_tenor:
-            tenor_months = st.number_input(
-                "投資時間（個X月）", min_value=1, max_value=60, value=6, step=1, key=f"fcn_tenor_{_mkt_suffix}"
+        active_vs = 1.0
+
+    def _coupon_verdict(offered: float, fair: float) -> str:
+        if fair <= 0:
+            return "—"
+        ratio = offered / fair
+        if ratio >= 1.1:
+            return f"偏高（對你有利，約 {ratio:.2f}× 理論）"
+        if ratio >= 0.9:
+            return f"合理（約 {ratio:.2f}× 理論）"
+        return f"偏低（發行商利差大，約 {ratio:.2f}× 理論）"
+
+    _fcn_default_pool = (["2330", "2317", "2454", "2412", "2882"] if is_tw
+                         else ["NVDA", "TSM", "TSLA", "AVGO", "AMZN", "MU", "INTC", "AMD"])
+
+    sub_calc, sub_sens, sub_screen, sub_record = st.tabs(
+        ["🎯 單筆試算", "📈 敏感度分析", "🔎 標的組合篩選", "📒 實際戰績"])
+
+    # ===== 5-1 單筆試算 =====
+    with sub_calc:
+        col_n_assets, col_tickers = st.columns([1, 3])
+        with col_n_assets:
+            n_assets = st.number_input(
+                "標的數量", min_value=1, max_value=FCN_MAX_ASSETS, value=1, step=1,
+                key=f"fcn_n_assets_{_mkt}",
             )
-        with col_strike:
-            strike_pct = st.number_input(
-                "執行價 STRIKE(%)", min_value=50.0, max_value=120.0, value=100.0, step=1.0,
-                key=f"fcn_strike_{_mkt_suffix}",
-            ) / 100
-        with col_ko:
-            ko_pct = st.number_input(
-                "提前出場 KO(%)", min_value=50.0, max_value=130.0, value=100.0, step=1.0,
-                key=f"fcn_ko_{_mkt_suffix}",
-            ) / 100
-
-        col_ki, col_coupon, col_ki_style = st.columns(3)
-        with col_ki:
-            ki_pct = st.number_input(
-                "下限價 KI(%)", min_value=10.0, max_value=120.0, value=75.0, step=1.0, key=f"fcn_ki_{_mkt_suffix}"
-            ) / 100
-        with col_coupon:
-            coupon_rate = st.number_input(
-                "年化收益率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
-                key=f"fcn_coupon_{_mkt_suffix}",
-            ) / 100
-        with col_ki_style:
-            ki_style_label = st.radio(
-                "KI 觀察方式", ["到期日觀察（歐式，較常見）", "每日觀察（美式，較嚴格）"],
-                key=f"fcn_ki_style_{_mkt_suffix}",
+        with col_tickers:
+            # Switching 市場 only builds the *active* market's FCN widgets, so the
+            # other market's text_input (e.g. fcn_tickers_us_3) isn't rendered that
+            # run and Streamlit garbage-collects its widget state — coming back, the
+            # field would reset to the hardcoded default. Keep the last-entered value
+            # in a plain (non-widget) session_state key, which is never GC'd, and use
+            # it as the field's default so a 台股⇄美股 round-trip preserves the input.
+            _fcn_tickers_shadow_key = f"fcn_tickers_value_{_mkt}_{n_assets}"
+            fcn_default_tickers = st.session_state.get(_fcn_tickers_shadow_key) or ", ".join(
+                (["2330", "2317", "2454", "2412", "2882"] if is_tw else ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"])[:n_assets]
             )
-            ki_style = "maturity" if ki_style_label.startswith("到期日觀察") else "continuous"
+            fcn_ticker_label = f"標的股票代號（共 {n_assets} 個，以「,」區隔）" + ("（台股代碼，例如 2330）" if is_tw else "")
+            fcn_raw_tickers = st.text_input(
+                fcn_ticker_label, value=fcn_default_tickers, key=f"fcn_tickers_{_mkt}_{n_assets}"
+            )
+            st.session_state[_fcn_tickers_shadow_key] = fcn_raw_tickers
+        fcn_tickers_input = [t.strip().upper() for t in fcn_raw_tickers.split(",") if t.strip()]
+        fcn_tickers = [universe.resolve_tw_ticker(t) for t in fcn_tickers_input] if is_tw else fcn_tickers_input
 
-        if ki_pct > strike_pct:
-            st.warning("下限價 KI 通常不應高於執行價 STRIKE，請確認條款設定是否正確。")
+        if len(fcn_tickers) != n_assets:
+            st.warning(f"已設定標的數量為 {n_assets}，但目前以「,」區隔輸入了 {len(fcn_tickers)} 個代號，請調整一致。")
+        else:
+            _mkt_suffix = _mkt
+            col_tenor, col_strike, col_ko = st.columns(3)
+            with col_tenor:
+                tenor_months = st.number_input(
+                    "投資時間（個X月）", min_value=1, max_value=60, value=6, step=1, key=f"fcn_tenor_{_mkt_suffix}"
+                )
+            with col_strike:
+                strike_pct = st.number_input(
+                    "執行價 STRIKE(%)", min_value=50.0, max_value=120.0, value=100.0, step=1.0,
+                    key=f"fcn_strike_{_mkt_suffix}",
+                ) / 100
+            with col_ko:
+                ko_pct = st.number_input(
+                    "提前出場 KO(%)", min_value=50.0, max_value=130.0, value=100.0, step=1.0,
+                    key=f"fcn_ko_{_mkt_suffix}",
+                ) / 100
 
-        _fcn_gate = f"fcn_confirmed_{_mkt_suffix}"
-        _fcn_pressed = st.button("確定", key=f"{_fcn_gate}_btn")
-        # 任一條款參數變動都會讓閘門重新關閉，需再按「確定」才重新抓價＋模擬。
-        _fcn_sig = (n_assets, fcn_raw_tickers, tenor_months, strike_pct,
-                    ko_pct, ki_pct, coupon_rate, ki_style)
-        if _confirm_gate(
-            _fcn_gate, _fcn_sig, _fcn_pressed, missing=False,
-            info_msg="請設定好所有參數，再按「確定」開始模擬。",
-        ):
-            fcn_closes = {}
-            for t in fcn_tickers:
-                t_df = dl.get_price_history(t, period="5y")
-                if not t_df.empty:
-                    cutoff = t_df.index.max() - pd.DateOffset(months=tenor_months)
-                    fcn_closes[t] = t_df["Close"][t_df.index >= cutoff]
-            missing = [t for t in fcn_tickers if t not in fcn_closes]
-            if missing:
-                st.error(f"找不到以下代號的價格資料，請確認是否正確：{', '.join(missing)}")
-            else:
-                close_df = pd.concat(fcn_closes, axis=1, join="inner")
-                close_df.columns = fcn_tickers
-                vols, drift_hist, corr = fcn.historical_stats(close_df)
+            col_ki, col_coupon, col_ki_style = st.columns(3)
+            with col_ki:
+                ki_pct = st.number_input(
+                    "下限價 KI(%)", min_value=10.0, max_value=120.0, value=75.0, step=1.0, key=f"fcn_ki_{_mkt_suffix}"
+                ) / 100
+            with col_coupon:
+                coupon_rate = st.number_input(
+                    "年化收益率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
+                    key=f"fcn_coupon_{_mkt_suffix}",
+                ) / 100
+            with col_ki_style:
+                ki_style_label = st.radio(
+                    "KI 觀察方式", ["到期日觀察（歐式，較常見）", "每日觀察（美式，較嚴格）"],
+                    key=f"fcn_ki_style_{_mkt_suffix}",
+                )
+                ki_style = "maturity" if ki_style_label.startswith("到期日觀察") else "continuous"
 
-                dividend_yields = []
+            if ki_pct > strike_pct:
+                st.warning("下限價 KI 通常不應高於執行價 STRIKE，請確認條款設定是否正確。")
+
+            _fcn_gate = f"fcn_confirmed_{_mkt_suffix}"
+            _fcn_pressed = st.button("確定", key=f"{_fcn_gate}_btn")
+            # 任一條款參數變動都會讓閘門重新關閉，需再按「確定」才重新抓價＋模擬。
+            _fcn_sig = (n_assets, fcn_raw_tickers, tenor_months, strike_pct,
+                        ko_pct, ki_pct, coupon_rate, ki_style, active_vs)
+            if _confirm_gate(
+                _fcn_gate, _fcn_sig, _fcn_pressed, missing=False,
+                info_msg="請設定好所有參數，再按「確定」開始模擬。",
+            ):
+                fcn_closes = {}
                 for t in fcn_tickers:
-                    dy = dl.get_company_info(t).get("dividendYield") or 0.0
-                    if dy > 0.5:  # yfinance has, at times, returned this as a percent rather than a fraction
-                        dy /= 100.0
-                    dividend_yields.append(dy)
-                dividend_yields = np.array(dividend_yields)
+                    t_df = dl.get_price_history(t, period="5y")
+                    if not t_df.empty:
+                        cutoff = t_df.index.max() - pd.DateOffset(months=tenor_months)
+                        fcn_closes[t] = t_df["Close"][t_df.index >= cutoff]
+                missing = [t for t in fcn_tickers if t not in fcn_closes]
+                if missing:
+                    st.error(f"找不到以下代號的價格資料，請確認是否正確：{', '.join(missing)}")
+                else:
+                    close_df = pd.concat(fcn_closes, axis=1, join="inner")
+                    close_df.columns = fcn_tickers
+                    vols, drift_hist, corr = fcn.historical_stats(close_df)
+                    vols_sim = vols * active_vs  # active_vs=1.0 unless 套用實單校準
 
-                asset_summary = pd.DataFrame({
-                    "最新收盤價": close_df.iloc[-1].apply(lambda v: f"{currency}{v:,.2f}"),
-                    "年化歷史波動率": [f"{v * 100:.1f}%" for v in vols],
-                    "年化歷史漲跌幅": [f"{v * 100:.1f}%" for v in drift_hist],
-                    "股息率（估）": [f"{v * 100:.2f}%" for v in dividend_yields],
-                }, index=[_display_name(t) for t in fcn_tickers])
-                st.markdown("##### 標的概況")
-                st.caption(f"歷史統計窗口：投資時間相同的最近 {tenor_months} 個月（若窗口較短，波動率／相關性估計可能不穩定）。")
-                st.dataframe(asset_summary, use_container_width=True)
-                if n_assets > 1:
-                    corr_df = pd.DataFrame(corr, index=[_display_name(t) for t in fcn_tickers],
-                                            columns=[_display_name(t) for t in fcn_tickers])
-                    st.markdown("###### 標的間相關係數")
-                    st.dataframe(corr_df.style.format("{:.2f}"), use_container_width=True)
+                    dividend_yields = []
+                    for t in fcn_tickers:
+                        dy = dl.get_company_info(t).get("dividendYield") or 0.0
+                        if dy > 0.5:  # yfinance has, at times, returned this as a percent rather than a fraction
+                            dy /= 100.0
+                        dividend_yields.append(dy)
+                    dividend_yields = np.array(dividend_yields)
 
-                drift_choice = st.radio(
-                    "風險評估的股價成長率假設",
-                    ["中性假設：預期報酬＝無風險利率，僅反映波動風險（較保守，預設）",
-                     "延伸近期歷史走勢（依上表「年化歷史漲跌幅」，可能過度樂觀或悲觀，僅供對照）"],
-                    key=f"fcn_drift_choice_{_mkt_suffix}",
-                )
-                use_historical_drift = drift_choice.startswith("延伸近期歷史走勢")
+                    asset_summary = pd.DataFrame({
+                        "最新收盤價": close_df.iloc[-1].apply(lambda v: f"{currency}{v:,.2f}"),
+                        "年化歷史波動率": [f"{v * 100:.1f}%" for v in vols],
+                        "年化歷史漲跌幅": [f"{v * 100:.1f}%" for v in drift_hist],
+                        "股息率（估）": [f"{v * 100:.2f}%" for v in dividend_yields],
+                    }, index=[_display_name(t) for t in fcn_tickers])
+                    st.markdown("##### 標的概況")
+                    st.caption(f"歷史統計窗口：投資時間相同的最近 {tenor_months} 個月（若窗口較短，波動率／相關性估計可能不穩定）。")
+                    st.dataframe(asset_summary, use_container_width=True)
+                    if n_assets > 1:
+                        corr_df = pd.DataFrame(corr, index=[_display_name(t) for t in fcn_tickers],
+                                                columns=[_display_name(t) for t in fcn_tickers])
+                        st.markdown("###### 標的間相關係數")
+                        st.dataframe(corr_df.style.format("{:.2f}"), use_container_width=True)
 
-                drift_risk_neutral = DEFAULT_RISK_FREE_RATE - dividend_yields
-                drift_for_risk = drift_hist if use_historical_drift else drift_risk_neutral
-
-                with st.spinner("模擬中…"):
-                    stats = _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drift_for_risk, corr,
-                                      DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
-                    rn_stats = (
-                        stats if not use_historical_drift else
-                        _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols, drift_risk_neutral, corr,
-                                 DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
+                    drift_choice = st.radio(
+                        "風險評估的股價成長率假設",
+                        ["中性假設：預期報酬＝無風險利率，僅反映波動風險（較保守，預設）",
+                         "延伸近期歷史走勢（依上表「年化歷史漲跌幅」，可能過度樂觀或悲觀，僅供對照）"],
+                        key=f"fcn_drift_choice_{_mkt_suffix}",
                     )
-                realized = fcn.realized_returns(stats, coupon_rate)
-                fair_coupon = fcn.fair_coupon_rate(rn_stats)
+                    use_historical_drift = drift_choice.startswith("延伸近期歷史走勢")
 
-                st.divider()
-                st.markdown("##### 風險評估結果")
-                r1, r2, r3 = st.columns(3)
-                r1.metric("提前出場機率", f"{stats.prob_autocall * 100:.1f}%")
-                r2.metric("平均出場月數", f"{stats.avg_exit_month:.1f} 個月")
-                r3.metric("本金虧損機率", f"{stats.prob_breach * 100:.1f}%")
+                    drift_risk_neutral = DEFAULT_RISK_FREE_RATE - dividend_yields
+                    drift_for_risk = drift_hist if use_historical_drift else drift_risk_neutral
 
-                r4, r5, r6 = st.columns(3)
-                r4.metric("期望報酬（總報酬，非年化）", f"{realized.mean() * 100:.2f}%")
-                r5.metric("5%最差情境報酬", f"{np.percentile(realized, 5) * 100:.2f}%")
-                r6.metric("風險中性參考年化收益率", f"{fair_coupon * 100:.2f}%",
-                          f"您輸入 {coupon_rate * 100:.2f}%")
-                st.caption(
-                    "「風險中性參考年化收益率」為假設無風險利率"
-                    f"（年化 {DEFAULT_RISK_FREE_RATE * 100:.0f}%）下，使票券折現價值等於票面（100%）的"
-                    "理論票息，可與您輸入的「年化收益率」比較：您輸入值若明顯偏低，代表此票券條款對發行商"
-                    "較有利；若明顯偏高，請留意是否低估了風險（例如波動率估計過低）。"
-                    "「本金虧損機率」「期望報酬」則依您所選的風險評估假設計算，為您實際可能面對的風險參考。"
+                    with st.spinner("模擬中…"):
+                        stats = _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols_sim, drift_for_risk, corr,
+                                          DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
+                        rn_stats = (
+                            stats if not use_historical_drift else
+                            _fcn_run(strike_pct, ki_pct, ko_pct, tenor_months, vols_sim, drift_risk_neutral, corr,
+                                     DEFAULT_RISK_FREE_RATE, ki_style, FCN_N_SIMS)
+                        )
+                    realized = fcn.realized_returns(stats, coupon_rate)
+                    fair_coupon = fcn.fair_coupon_rate(rn_stats)
+                    win = fcn.win_rate(stats)
+
+                    st.divider()
+                    st.markdown("##### 風險評估結果")
+                    r1, r2, r3 = st.columns(3)
+                    r1.metric("本金安全勝率", f"{win * 100:.1f}%",
+                              help="拿回本金（提前贖回或到期未觸 KI）的機率＝1−被接到股票機率。")
+                    r2.metric("提前贖回機率", f"{stats.prob_autocall * 100:.1f}%",
+                              help="全部標的同時達 KO、提前以票面出場的機率。")
+                    r3.metric("被接到股票（本金虧損）機率", f"{stats.prob_breach * 100:.1f}%",
+                              help="未提前贖回且觸 KI → 到期以執行價換成最差標的股票、本金虧損。")
+
+                    r4, r5, r6 = st.columns(3)
+                    r4.metric("平均出場月數", f"{stats.avg_exit_month:.1f} 個月")
+                    r5.metric("期望報酬（總報酬，非年化）", f"{realized.mean() * 100:.2f}%")
+                    r6.metric("5%最差情境報酬", f"{np.percentile(realized, 5) * 100:.2f}%")
+
+                    st.markdown("##### 利息合理性")
+                    c1, c2 = st.columns(2)
+                    c1.metric("您的年化配息率", f"{coupon_rate * 100:.2f}%")
+                    c2.metric("風險中性理論年化票息", f"{fair_coupon * 100:.2f}%",
+                              _coupon_verdict(coupon_rate, fair_coupon))
+                    st.caption(
+                        "「理論票息」為假設無風險利率"
+                        f"（年化 {DEFAULT_RISK_FREE_RATE * 100:.0f}%）下，使票券折現價值等於票面（100%）的理論值。"
+                        "本模型為簡化 GBM、**未含波動率偏斜與發行商利差**，理論票息通常偏低；因此「偏高」多屬正常，"
+                        "此欄較適合用來**比較不同條款/標的的相對吸引力**，而非判定絕對划算與否。"
+                    )
+
+    # ===== 5-2 敏感度分析 =====
+    with sub_sens:
+        st.caption("固定標的與其餘條款，只變動一個條款，看「本金安全勝率」與「合理票息」如何取捨（例如降低 KI 障礙、改到期觀察都能提高勝率）。")
+        sens_tickers_raw = st.text_input(
+            "標的（以「,」區隔，worst-of）", value=", ".join(_fcn_default_pool[:3]),
+            key=f"fcn_sens_tickers_{_mkt}",
+        )
+        sens_tickers = [universe.resolve_tw_ticker(t.strip().upper()) if is_tw else t.strip().upper()
+                        for t in sens_tickers_raw.split(",") if t.strip()]
+        sc1, sc2, sc3 = st.columns(3)
+        sens_tenor = sc1.number_input("投資時間（月）", 1, 60, 6, 1, key=f"fcn_sens_tenor_{_mkt}")
+        sens_strike = sc2.number_input("執行價 STRIKE(%)", 50.0, 120.0, 100.0, 1.0, key=f"fcn_sens_strike_{_mkt}") / 100
+        sens_ko = sc3.number_input("提前出場 KO(%)", 50.0, 130.0, 100.0, 1.0, key=f"fcn_sens_ko_{_mkt}") / 100
+        sc4, sc5 = st.columns(2)
+        sens_ki = sc4.number_input("下限價 KI(%)", 10.0, 120.0, 65.0, 1.0, key=f"fcn_sens_ki_{_mkt}") / 100
+        sens_style_label = sc5.radio("KI 觀察方式", ["到期日觀察（歐式）", "每日觀察（美式）"],
+                                     key=f"fcn_sens_style_{_mkt}", horizontal=True)
+        sens_style = "maturity" if sens_style_label.startswith("到期日觀察") else "continuous"
+        sweep_param_label = st.selectbox(
+            "要掃描的條款", ["下限價 KI(%)", "投資時間（月）", "提前出場 KO(%)", "KI 觀察方式"],
+            key=f"fcn_sweep_param_{_mkt}")
+
+        if st.button("執行敏感度分析", key=f"fcn_sens_btn_{_mkt}"):
+            base = dict(tenor=int(sens_tenor), strike=sens_strike, ki=sens_ki, ko=sens_ko, ki_style=sens_style)
+            if sweep_param_label.startswith("下限價"):
+                pname, values, xlabel = "ki", [round(x, 2) for x in np.arange(0.40, 0.851, 0.05)], "KI(%)"
+            elif sweep_param_label.startswith("投資時間"):
+                pname, values, xlabel = "tenor", [2, 3, 4, 6, 9, 12], "投資時間（月）"
+            elif sweep_param_label.startswith("提前出場"):
+                pname, values, xlabel = "ko", [round(x, 2) for x in np.arange(0.85, 1.101, 0.05)], "KO(%)"
+            else:
+                pname, values, xlabel = "ki_style", ["maturity", "continuous"], "KI 觀察方式"
+            try:
+                with st.spinner("模擬中…"):
+                    dfw = fcn_screen.sweep(sens_tickers, base, pname, values, vol_scale=active_vs)
+            except ValueError as e:
+                st.error(str(e))
+            else:
+                xcat = pname == "ki_style"
+                xvals = (["到期觀察", "每日觀察"] if xcat else
+                         [f"{int(v * 100)}%" if pname in ("ki", "ko") else int(v) for v in dfw[pname]])
+                fig = go.Figure()
+                fig.add_bar(x=xvals, y=(dfw["win_rate"] * 100), name="本金安全勝率(%)",
+                            marker_color="#2ca02c", yaxis="y")
+                fig.add_trace(go.Scatter(x=xvals, y=(dfw["fair_coupon"] * 100), name="合理年化票息(%)",
+                                         mode="lines+markers", marker_color="#ff7f0e", yaxis="y2"))
+                fig.update_layout(
+                    xaxis_title=xlabel, yaxis=dict(title="本金安全勝率(%)", range=[0, 100]),
+                    yaxis2=dict(title="合理年化票息(%)", overlaying="y", side="right"),
+                    legend=dict(orientation="h", y=1.12), height=420,
                 )
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                show = dfw.copy()
+                show["本金安全勝率"] = (show["win_rate"] * 100).round(1).astype(str) + "%"
+                show["提前贖回機率"] = (show["prob_autocall"] * 100).round(1).astype(str) + "%"
+                show["合理年化票息"] = (show["fair_coupon"] * 100).round(2).astype(str) + "%"
+                show[pname] = xvals
+                st.dataframe(show[[pname, "本金安全勝率", "提前贖回機率", "合理年化票息"]],
+                             use_container_width=True, hide_index=True)
+
+    # ===== 5-3 標的組合篩選 =====
+    with sub_screen:
+        st.caption("從候選池中，對每個 basket 組合以相同條款試算，依「本金安全勝率」排序，幫你挑勝率高、又能對照合理票息的組合。")
+        pool_raw = st.text_input("候選標的池（以「,」區隔）", value=", ".join(_fcn_default_pool),
+                                 key=f"fcn_pool_{_mkt}")
+        pool = [universe.resolve_tw_ticker(t.strip().upper()) if is_tw else t.strip().upper()
+                for t in pool_raw.split(",") if t.strip()]
+        pcol1, pcol2, pcol3 = st.columns(3)
+        combo_size = pcol1.number_input("每組標的數", 1, min(FCN_MAX_ASSETS, max(1, len(pool))),
+                                        min(3, max(1, len(pool))), 1, key=f"fcn_combo_{_mkt}")
+        scr_tenor = pcol2.number_input("投資時間（月）", 1, 60, 6, 1, key=f"fcn_scr_tenor_{_mkt}")
+        scr_target = pcol3.number_input("你被報的年化配息(%)（可選，比較用）", 0.0, 100.0, 0.0, 0.5,
+                                        key=f"fcn_scr_target_{_mkt}") / 100
+        scol1, scol2, scol3, scol4 = st.columns(4)
+        scr_strike = scol1.number_input("STRIKE(%)", 50.0, 120.0, 100.0, 1.0, key=f"fcn_scr_strike_{_mkt}") / 100
+        scr_ko = scol2.number_input("KO(%)", 50.0, 130.0, 100.0, 1.0, key=f"fcn_scr_ko_{_mkt}") / 100
+        scr_ki = scol3.number_input("KI(%)", 10.0, 120.0, 65.0, 1.0, key=f"fcn_scr_ki_{_mkt}") / 100
+        scr_style_label = scol4.radio("KI 觀察", ["到期", "每日"], key=f"fcn_scr_style_{_mkt}", horizontal=True)
+        scr_style = "maturity" if scr_style_label == "到期" else "continuous"
+
+        n_combos = fcn_screen.count_combos(len(pool), int(combo_size))
+        st.caption(f"目前組合數：C({len(pool)}, {int(combo_size)}) = {n_combos}（上限 {fcn_screen.MAX_COMBOS}）。")
+        if st.button("執行篩選", key=f"fcn_screen_btn_{_mkt}"):
+            structure = dict(tenor=int(scr_tenor), strike=scr_strike, ki=scr_ki, ko=scr_ko, ki_style=scr_style)
+            try:
+                with st.spinner(f"掃描 {n_combos} 組合中…"):
+                    dfs = fcn_screen.screen_baskets(
+                        pool, int(combo_size), structure,
+                        target_coupon=(scr_target if scr_target > 0 else None), vol_scale=active_vs)
+            except ValueError as e:
+                st.error(str(e))
+            else:
+                disp = dfs.copy()
+                for c in ["本金安全勝率", "提前贖回機率", "合理年化票息", "平均年化波動"]:
+                    disp[c] = (disp[c] * 100).round(1).astype(str) + "%"
+                disp["平均相關"] = disp["平均相關"].round(2)
+                if "利差(目標-合理)" in disp:
+                    disp["利差(目標-合理)"] = (dfs["利差(目標-合理)"] * 100).round(1).astype(str) + "%"
+                st.dataframe(disp, use_container_width=True, hide_index=True)
+                st.caption("勝率高者多為低波動、低相關的組合；「合理年化票息」為模型理論值（偏低），"
+                           "填入實際被報配息可看相對利差。**篩選以中性/風險中性假設估算，僅供研究參考。**")
+
+    # ===== 5-4 實際戰績 =====
+    with sub_record:
+        st.caption("以 FCN_記錄整理.xlsx 的 18 筆實單為樣本：用定價日資料跑模型預測勝率，對照真實走勢的實際結果。")
+        if st.button("載入實際戰績回測", key=f"fcn_record_btn_{_mkt}"):
+            with st.spinner("回測 18 筆實單中…"):
+                results, summ = fcn_backtest.run_backtest(fcn_records.RECORDS, vol_scale=active_vs, n_sims=4000)
+            _status_zh = {"autocalled": "提前贖回", "matured": "到期", "pending": "進行中",
+                          "no_window": "資料不足", "no_data": "資料不足"}
+            rows = []
+            for x in results:
+                r, o = x.record, x.outcome
+                if o["status"] == "autocalled":
+                    actual = f"提前贖回@{o['exit_month']}月"
+                elif o["status"] == "matured":
+                    actual = "到期觸KI被接股" if o["breached"] else "到期未觸KI"
+                else:
+                    actual = _status_zh.get(o["status"], o["status"])
+                rows.append({
+                    "序": r.id, "標的": "/".join(r.tickers), "天期": f"{r.tenor_months}月",
+                    "KI": f"{int(r.ki * 100)}%", "KI式": "每日" if r.ki_style == "continuous" else "到期",
+                    "模型勝率": f"{x.model_win_rate * 100:.0f}%" if x.model_win_rate is not None else "—",
+                    "配息": f"{r.coupon * 100:.1f}%",
+                    "實際結果": actual,
+                    "實報酬": f"{o['realized_return'] * 100:+.1f}%" if o.get("realized_return") is not None else "—",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("已結束筆數", f"{summ['n_resolved']} / {summ['n_total']}",
+                      help=f"提前贖回 {summ['n_autocalled']}、到期 {summ['n_matured']}、進行中 {summ['n_pending']}")
+            m2.metric("實際本金安全勝率",
+                      f"{summ['realized_win_rate'] * 100:.0f}%" if summ["realized_win_rate"] is not None else "—",
+                      help="已結束實單中未被接到股票的比例。")
+            m3.metric("模型平均預測勝率",
+                      f"{summ['mean_model_win_rate'] * 100:.0f}%" if summ["mean_model_win_rate"] is not None else "—")
+            st.caption("目前多數實單仍進行中（censored），且區間為 2026 多頭；實際勝率偏高屬樣本偏誤，"
+                       "請勿據此外推未來。此面板用於檢視模型預測與真實結果的落差。")
 
     st.divider()
     st.caption(

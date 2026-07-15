@@ -21,15 +21,54 @@ _TWSE_T86_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
 _TWSE_COMPANY_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 
 
+# Fallback price source: Yahoo's v8 chart REST endpoint, hit directly. Some
+# environments have a broken yfinance (e.g. yfinance 1.4.1 here returns
+# "possibly delisted" for every ticker via its crumb/cookie path) while this
+# plain endpoint works once given a browser User-Agent. Only used when yfinance
+# yields nothing, so cloud behaviour is unchanged.
+_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{t}?range={range}&interval={interval}"
+_CHART_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def _chart_ohlcv(ticker: str, period: str, interval: str) -> pd.DataFrame:
+    """OHLCV DataFrame from the chart endpoint, split/dividend-adjusted to match
+    yfinance's auto_adjust=True. Empty DataFrame on any failure."""
+    url = _CHART_URL.format(t=ticker, range=period, interval=interval)
+    req = urllib.request.Request(url, headers=_CHART_HEADERS)
+    try:
+        payload = json.loads(urllib.request.urlopen(req, timeout=20).read())
+        res = payload["chart"]["result"][0]
+        idx = pd.to_datetime([dt.datetime.fromtimestamp(t, dt.UTC).date() for t in res["timestamp"]])
+        q = res["indicators"]["quote"][0]
+        df = pd.DataFrame(
+            {"Open": q["open"], "High": q["high"], "Low": q["low"],
+             "Close": q["close"], "Volume": q["volume"]},
+            index=idx,
+        )
+        adj = res["indicators"].get("adjclose", [{}])[0].get("adjclose")
+        if adj is not None:
+            ratio = (pd.Series(adj, index=idx) / df["Close"]).where(df["Close"] > 0, 1.0)
+            for c in ("Open", "High", "Low", "Close"):
+                df[c] = df[c] * ratio
+        return df.dropna(how="all")
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_price_history(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     try:
         df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
     except Exception:
-        return pd.DataFrame()
+        df = pd.DataFrame()
+    if df.empty:  # broken/rate-limited yfinance → try the chart endpoint directly
+        df = _chart_ohlcv(ticker, period, interval)
     if df.empty:
         return df
-    df.index = pd.to_datetime(df.index).tz_localize(None)
+    idx = pd.to_datetime(df.index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    df.index = idx
     return df
 
 

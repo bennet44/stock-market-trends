@@ -1,0 +1,16 @@
+{
+  "vol_scale": 0.7,
+  "_meta": {
+    "calibrated_at": "2026-07-12",
+    "as_of": "2026-07-12",
+    "n_records": 18,
+    "n_resolved": 6,
+    "real_exit_rate": 1.0,
+    "real_loss_rate": 0.0,
+    "bounds": [
+      0.7,
+      1.5
+    ],
+    "caveat": "18 notes over a single 2026 bull window; regime-biased sanity nudge, not a fitted parameter."
+  }
+}
