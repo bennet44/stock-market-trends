@@ -583,7 +583,7 @@ def build_recommendation_table(
             "_is_etf": 1.0 if is_etf else 0.0,
             # 1.0 when 現價 is below the 20-day 月線 → 綜合評分 penalty.
             "_below_sma20": 1.0 if (pd.notna(sma20_val) and last_close < sma20_val) else 0.0,
-            # 朱家泓 short-term breakout trigger; only consulted for short-horizon
+            # 投機式 short-term breakout trigger; only consulted for short-horizon
             # buy picks (see top_buy_sell's require_signal_col), not scored.
             "_zhu_signal": 1.0 if zhu_signal else 0.0,
             "_zhu_vol_ok": 1.0 if zhu_vol_ok else 0.0,
@@ -720,7 +720,7 @@ TECH_BIAS_BETA = 0.4
 
 
 def zhu_breakout_signal(close: pd.Series, high: pd.Series) -> bool:
-    """朱家泓-style short-term entry trigger: uptrend filter (現價 above a
+    """投機式 short-term entry trigger: uptrend filter (現價 above a
     rising MA20) plus a breakout trigger (收盤突破MA5 且 收盤突破前一日最高點).
     Backtested over 2026-02~06: lifts the 1-day-hold win rate among 美股
     Top-10 picks from ~54% to ~60%; used as a hard gate (not a score
@@ -742,7 +742,7 @@ def zhu_breakout_signal(close: pd.Series, high: pd.Series) -> bool:
 
 
 def zhu_volume_confirmed(volume: pd.Series, ratio: float = 1.2) -> bool:
-    """朱家泓 also requires 放量 (a volume pickup) to confirm a breakout is real
+    """投機式操作 also requires 放量 (a volume pickup) to confirm a breakout is real
     buying, not a thin no-volume false move. This isn't wired in as a hard
     gate (untested whether it actually improves win rate) — it's used to
     flag, in 備註, breakout picks whose volume didn't actually confirm, so
@@ -770,7 +770,7 @@ def horizon_for_hold_days(hold_days: int) -> str:
 
 def chu_verdict(open_: pd.Series, high: pd.Series, low: pd.Series,
                 close: pd.Series, volume: pd.Series) -> dict | None:
-    """朱家泓-style operating read synthesised from the same rule-based pieces
+    """投機式 operating read synthesised from the same rule-based pieces
     the app already computes (zhu breakout gate, 放量, 均線/月線/季線, KD/MACD,
     支撐壓力, 型態). Returns a structured verdict dict, or None if there aren't
     enough bars (needs the 60-day 季線). This is a heuristic encoding of the
@@ -830,7 +830,7 @@ def chu_verdict(open_: pd.Series, high: pd.Series, low: pd.Series,
                     "kd_golden": kd_golden, "macd_red": macd_red}
     notes = []
 
-    # ── 朱家泓 決策樹 ─────────────────────────────────────────────
+    # ── 投機操作 決策樹 ───────────────────────────────────────────
     if not above_ma20:
         level = "stand_aside"
         verdict = "未站上月線（生命線），多方無立足點——空手觀望，等站上月線再看。"
@@ -1175,9 +1175,9 @@ def add_reason(df: pd.DataFrame, side: str) -> pd.DataFrame:
             text += "（未站上月線SMA20，已扣分）"
         reasons.append(text)
 
-    # 備註: this pick is a 朱家泓 short-horizon breakout (passed the hard
-    # entry gate in top_buy_sell) but lacked the 放量 confirmation he also
-    # requires — flag it so the trade is entered with stop-loss already in
+    # 備註: this pick is a speculative short-horizon breakout (passed the hard
+    # entry gate in top_buy_sell) but lacked the 放量 confirmation the method
+    # also requires — flag it so the trade is entered with stop-loss already in
     # mind, since an unconfirmed breakout is more likely to be a fake-out.
     notes = []
     if side == "buy" and "_zhu_signal" in df.columns and "_zhu_vol_ok" in df.columns:

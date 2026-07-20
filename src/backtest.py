@@ -48,7 +48,7 @@ TREND_KEY_LIVE = "趨勢(價格/均線)"
 # history there are too few non-overlapping 1-year forward windows to fit a
 # long-hold model, so long weights stay hand-tuned (valuation/Sharpe-led).
 TRAINABLE_HORIZONS = ["short", "medium"]
-# Guardrails so a small-sample fit refines the hand-tuned (朱家泓-based)
+# Guardrails so a small-sample fit refines the hand-tuned (speculative-method)
 # baseline rather than overwriting it:
 #   TRAIN_BLEND — final = α·trained + (1-α)·baseline per factor. At 0.5 every
 #     factor keeps ≥50% of its baseline (a zeroed core factor like 籌碼 can't

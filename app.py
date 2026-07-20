@@ -15,6 +15,7 @@ from src import fcn_backtest
 from src import fcn_records
 from src import fcn_screen
 from src import news
+from src import price_fetch
 from src import recommend
 from src import risk
 from src import technical as ta
@@ -84,6 +85,12 @@ _PERSIST_EXCLUDE_PREFIXES = (
     "show_buy_", "show_sell_",
     "reco_confirmed_", "price_confirmed_", "compare_confirmed_", "fcn_confirmed_",
     "ticker_hist_pick_",
+    # st.date_input stores a datetime.date, which json.dumps can't serialize;
+    # since _settings_to_save below dumps the whole session_state dict in one
+    # call, one non-serializable value would break persistence for every
+    # widget on every tab, not just this one. Simplest safe fix until the app
+    # has enough date_input widgets to justify a real date-aware (de)serializer.
+    "fcn_invest_date_",
 )
 _local_storage = LocalStorage()
 _saved_settings_raw = _local_storage.getItem(_SETTINGS_STORAGE_KEY)
@@ -131,7 +138,7 @@ _HORIZON_LABEL = {"short": "短期", "medium": "中期", "long": "長期"}
 # end is consolidated into day-count buckets (1~5天/6~10天/11~15天) — each
 # bucket runs the same formula at its upper-bound day count, since picking
 # 1天 vs 3天 vs 5天 individually didn't change which formula applied anyway
-# (朱家泓突破濾網 only ever distinguished ≤5 天 vs not). Past 15 天 the
+# (投機突破濾網 only ever distinguished ≤5 天 vs not). Past 15 天 the
 # original calendar-period labels are kept as-is (1個月/3個月/...).
 RECO_HOLD_OPTIONS = {
     "1~5天": 5, "6~10天": 10, "11~15天": 15,
@@ -876,12 +883,12 @@ with tab_overview:
             st.metric(f"{primary_label} 最新收盤價", f"{currency}{latest:,.2f}",
                        f"{(latest / prev - 1) * 100:.2f}%")
 
-            # 🎯 朱家泓操作判讀：把上面各零件（月線/均線/突破/放量/KD/MACD/
-            # 支撐壓力）合成一句操作結論＋進場/停損/目標。規則式仿方法論，
+            # 🎯 投機操作判讀：把上面各零件（月線/均線/突破/放量/KD/MACD/
+            # 支撐壓力）合成一句操作結論＋進場/停損/目標。規則式量價紀律，
             # 同一函式日後供鎖股區逐檔套用。
             _chu = recommend.chu_verdict(df["Open"], df["High"], df["Low"], close, df["Volume"])
             if _chu is not None:
-                st.markdown("#### 🎯 朱家泓操作判讀")
+                st.markdown("#### 🎯 投機操作判讀")
                 _lvl = _chu["verdict_level"]
                 _msg = f"**【{_chu['stage']}】** {_chu['verdict']}"
                 if _lvl in ("buy_watch", "hold_bullish"):
@@ -922,8 +929,8 @@ with tab_overview:
                     )
                 if _chu["notes"]:
                     st.caption("　".join(f"⚠ {n}" for n in _chu["notes"]))
-                st.caption("以上為規則式套用朱家泓方法論（月線生命線、量價突破、停損紀律）自動判讀，"
-                           "非本尊、非投資建議；務必自設停損、自負風險。")
+                st.caption("以上為規則式投機操作判讀（月線生命線、量價突破、停損紀律）自動產生，"
+                           "非投資建議；務必自設停損、自負風險。")
 
             # ETF: list constituent holdings (capped — a holdings table with
             # dozens/hundreds of rows, e.g. a bond ETF, would blow out the page
@@ -935,6 +942,15 @@ with tab_overview:
                     st.markdown("##### 成份股")
                     hdf = holdings.reset_index()
                     hdf.columns = ["代號", "名稱", "權重"]
+                    if is_tw:
+                        # yfinance 的成份股名稱是英文；台股一律顯示中文名稱
+                        # （curated → TWSE 上市公司 → ETF 名單），查不到才保留原名。
+                        hdf["名稱"] = [
+                            universe.get_tw_company_name(str(s)) or n
+                            for s, n in zip(hdf["代號"], hdf["名稱"])
+                        ]
+                        hdf["代號"] = hdf["代號"].astype(str).str.replace(
+                            r"\.(TW|TWO)$", "", regex=True)
                     hdf["權重"] = (hdf["權重"] * 100).map(lambda v: f"{v:.2f}%")
                     st.dataframe(hdf, use_container_width=True, hide_index=True)
                 else:
@@ -980,19 +996,31 @@ with tab_overview:
                     help="保守＝目標較近、較易達成（預測準確機率較高）；積極＝目標較遠。中性＝歷史中位幅度。",
                 )
             aggr_pct = RECO_AGGRESSIVENESS[aggr_label]
+            # 統計視窗預設 1 年；持有天數一長（如 1 年＝252 交易日），1 年視窗
+            # 湊不出任何前瞻報酬樣本（pct_change(252) 全 NaN → 顯示「資料不足」），
+            # 所以依持有天數自動延長到「持有期＋約 1 年樣本」能涵蓋的 Yahoo 區間。
+            # （252 日持有實測過 2y 視窗：多頭段的下跌樣本會是 0、買入價出不來，
+            # 所以直接跳 5y；更長持有用 10y，與買賣建議分頁的 hist_period 一致。）
+            if hold_days <= 126:
+                _pt_period, _pt_period_label = "1y", "1 年"
+            elif hold_days <= 252:
+                _pt_period, _pt_period_label = "5y", "5 年"
+            else:
+                _pt_period, _pt_period_label = "10y", "10 年"
             query_date = dt.date.today()
             target_date = query_date + dt.timedelta(days=round(hold_days * 7 / 5))  # trading→calendar
             st.caption(
-                "統計期間皆是 1 年。計算邏輯與「買賣建議」分頁一致："
+                f"統計期間為 {_pt_period_label}（依持有天數自動延長，確保有足夠的前瞻報酬樣本）。"
+                "計算邏輯與「買賣建議」分頁一致："
                 "取價＝現價×(1＋歷史漲跌幅〔依目標積極度取百分位〕，並依技術訊號〔布林/SMA多頭/趨勢/形態辨識+動能〕微調)；"
                 "預測準確機率＝路徑式回測（持有期內最高/最低觸及的實測比例）。"
-                f"依過去 1 年、持有 {hold_disp1} 估算，"
+                f"依過去 {_pt_period_label}、持有 {hold_disp1} 估算，"
                 f"查詢日 {query_date.year}/{query_date.month}/{query_date.day} ~ "
                 f"預測日 {target_date.year}/{target_date.month}/{target_date.day}，僅供參考，非投資建議。"
             )
             # Same logic as the 買賣建議 tab (median move pricing, technical nudge,
-            # path-based touch rate), but on a fixed 1-year window, so 統計期間皆是 1 年.
-            pt = dl.get_price_history(primary, period="1y")
+            # path-based touch rate), on the hold-days-scaled window chosen above.
+            pt = dl.get_price_history(primary, period=_pt_period)
             if pt.empty:
                 pt = df  # chart data (non-empty here) as a safety net
             pt_close, pt_high, pt_low = pt["Close"], pt["High"], pt["Low"]
@@ -1015,7 +1043,7 @@ with tab_overview:
                     acc = recommend.forward_touch_rate(pt_close, pt_low, hold_days, down_move, "down")
                     st.metric("建議買入價（逢低承接）", f"{currency}{latest * (1 + down_move):,.2f}",
                                f"{down_move * 100:.2f}%")
-                    st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最低觸及此買入價的比例約 "
+                    st.caption(f"預測準確機率：歷史 {_pt_period_label}中，持有 {hold_days} 個交易日內最低觸及此買入價的比例約 "
                                f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
                 else:
                     st.metric("建議買入價（逢低承接）", "資料不足")
@@ -1024,7 +1052,7 @@ with tab_overview:
                     acc = recommend.forward_touch_rate(pt_close, pt_high, hold_days, up_move, "up")
                     st.metric("建議賣出價（目標停利）", f"{currency}{latest * (1 + up_move):,.2f}",
                                f"{up_move * 100:.2f}%")
-                    st.caption(f"預測準確機率：歷史 1 年中，持有 {hold_days} 個交易日內最高觸及此賣出價的比例約 "
+                    st.caption(f"預測準確機率：歷史 {_pt_period_label}中，持有 {hold_days} 個交易日內最高觸及此賣出價的比例約 "
                                f"{acc:.0f}%。" if acc is not None else "預測準確機率：資料不足。")
                 else:
                     st.metric("建議賣出價（目標停利）", "資料不足")
@@ -1417,7 +1445,7 @@ def _render_buy_sell_section(
             "- **操作**：點各欄表頭可由大至小／小至大排序\n"
             + (
                 (
-                    f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採朱家泓式突破訊號"
+                    f"- **短期進場濾網**：持有 {hold_display}（≤5 交易日）時，買入清單採投機式突破訊號"
                     "（現價站上向上的MA20＋收盤同時突破MA5與前一日高點）做硬性篩選，沒訊號的標的不會入選買入清單"
                     "（回測 2026/02～06 美股 1/3/5 天持有：53.8%→60.4%、56.0%→56.5%、53.0%→53.4%；"
                     "6～10 天另外回測過，濾網沒有穩定效果甚至偶爾更差，故不套用，回歸純綜合評分排序）\n"
@@ -1472,7 +1500,7 @@ def _render_buy_sell_section(
         st.warning("無足夠資料產生建議，請確認統計期間。")
         return
 
-    # ≤5 交易日 only: gate buy picks to 朱家泓-style breakout triggers
+    # ≤5 交易日 only: gate buy picks to speculative-style breakout triggers
     # (現價>上升MA20 且 收盤突破MA5+前日高點), not just highest score.
     # Backtested 2026-02~06 美股: lifts win rate at 1/3/5 天 (~54%→60% at
     # 1天); a separate 6~10 天 backtest found no reliable improvement
@@ -1580,7 +1608,7 @@ def _render_buy_sell_section(
         if _zhu_gate:
             st.info(
                 f"買入清單僅 {len(buy_df)} 檔（非選擇的 Top {top_n}）：持有 {hold_display} 採用"
-                "朱家泓式進場濾網（現價站上向上的MA20、且收盤同時突破MA5與前一日高點），"
+                "投機式進場濾網（現價站上向上的MA20、且收盤同時突破MA5與前一日高點），"
                 "目前範圍內符合此突破訊號的標的較少，沒訊號不勉強湊數。"
             )
         else:
@@ -1728,7 +1756,7 @@ with tab_fcn:
                     key=f"fcn_ko_{_mkt_suffix}",
                 ) / 100
 
-            col_ki, col_coupon, col_ki_style = st.columns(3)
+            col_ki, col_coupon, col_ki_style, col_invest_date = st.columns(4)
             with col_ki:
                 ki_pct = st.number_input(
                     "下限價 KI(%)", min_value=10.0, max_value=120.0, value=75.0, step=1.0, key=f"fcn_ki_{_mkt_suffix}"
@@ -1744,6 +1772,12 @@ with tab_fcn:
                     key=f"fcn_ki_style_{_mkt_suffix}",
                 )
                 ki_style = "maturity" if ki_style_label.startswith("到期日觀察") else "continuous"
+            with col_invest_date:
+                invest_date = st.date_input(
+                    "投資日期（換算執行價／下限價／出場價實際金額用）",
+                    value=dt.date.today(), min_value=dt.date.today() - dt.timedelta(days=5 * 365),
+                    max_value=dt.date.today(), key=f"fcn_invest_date_{_mkt_suffix}",
+                )
 
             if ki_pct > strike_pct:
                 st.warning("下限價 KI 通常不應高於執行價 STRIKE，請確認條款設定是否正確。")
@@ -1752,15 +1786,17 @@ with tab_fcn:
             _fcn_pressed = st.button("確定", key=f"{_fcn_gate}_btn")
             # 任一條款參數變動都會讓閘門重新關閉，需再按「確定」才重新抓價＋模擬。
             _fcn_sig = (n_assets, fcn_raw_tickers, tenor_months, strike_pct,
-                        ko_pct, ki_pct, coupon_rate, ki_style, active_vs)
+                        ko_pct, ki_pct, coupon_rate, ki_style, active_vs, invest_date)
             if _confirm_gate(
                 _fcn_gate, _fcn_sig, _fcn_pressed, missing=False,
                 info_msg="請設定好所有參數，再按「確定」開始模擬。",
             ):
                 fcn_closes = {}
+                fcn_full_close = {}
                 for t in fcn_tickers:
                     t_df = dl.get_price_history(t, period="5y")
                     if not t_df.empty:
+                        fcn_full_close[t] = t_df["Close"]
                         cutoff = t_df.index.max() - pd.DateOffset(months=tenor_months)
                         fcn_closes[t] = t_df["Close"][t_df.index >= cutoff]
                 missing = [t for t in fcn_tickers if t not in fcn_closes]
@@ -1794,6 +1830,25 @@ with tab_fcn:
                                                 columns=[_display_name(t) for t in fcn_tickers])
                         st.markdown("###### 標的間相關係數")
                         st.dataframe(corr_df.style.format("{:.2f}"), use_container_width=True)
+
+                    ref_prices = [price_fetch.close_on(fcn_full_close[t], invest_date.isoformat())
+                                  for t in fcn_tickers]
+                    strike_table = pd.DataFrame({
+                        "執行價 STRIKE": [f"{currency}{p * strike_pct:,.2f}（{strike_pct * 100:.0f}%）"
+                                         if p is not None else "—" for p in ref_prices],
+                        "下限價 KI": [f"{currency}{p * ki_pct:,.2f}（{ki_pct * 100:.0f}%）"
+                                    if p is not None else "—" for p in ref_prices],
+                        "出場價 KO": [f"{currency}{p * ko_pct:,.2f}（{ko_pct * 100:.0f}%）"
+                                    if p is not None else "—" for p in ref_prices],
+                    }, index=[_display_name(t) for t in fcn_tickers])
+                    st.markdown("##### 依投資日期試算的履約價格")
+                    st.caption(f"參考價＝{invest_date.strftime('%Y/%m/%d')}（或之前最近交易日）之實際收盤價，"
+                               "乘上對應條款百分比計算。")
+                    st.dataframe(strike_table, use_container_width=True)
+                    _ref_missing_names = [_display_name(t) for t, p in zip(fcn_tickers, ref_prices) if p is None]
+                    if _ref_missing_names:
+                        st.caption(f"⚠ 查無 {invest_date.strftime('%Y/%m/%d')} 或之前的價格資料："
+                                   f"{'、'.join(_ref_missing_names)}")
 
                     drift_choice = st.radio(
                         "風險評估的股價成長率假設",
