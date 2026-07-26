@@ -2,6 +2,7 @@
 import datetime as dt
 import json
 import urllib.request
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -55,6 +56,30 @@ def _chart_ohlcv(ticker: str, period: str, interval: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+_MARKET_TZ = {"tw": ZoneInfo("Asia/Taipei"), "us": ZoneInfo("America/New_York")}
+_MARKET_CLOSE = {"tw": dt.time(13, 30), "us": dt.time(16, 0)}
+
+
+def _drop_unconfirmed_bar(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Drop the trailing daily bar if it's an unconfirmed/NaN close: either
+    today's session hasn't reached the market's actual close time yet (a
+    still-forming intraday bar mislabeled as a close by yfinance/the chart
+    API), or the bar's Close is NaN (seen on some TW ETFs). Every "最新收盤價"
+    consumer across the app reads this function's last row, so guarding here
+    once covers individual-stock/buy-sell/holding/FCN/comparison pages
+    without touching each of them."""
+    if df.empty:
+        return df
+    market = "tw" if ticker.endswith((".TW", ".TWO")) else "us"
+    now_local = dt.datetime.now(_MARKET_TZ[market])
+    last_date = df.index[-1].date()
+    last_close = df["Close"].iloc[-1]
+    unconfirmed_today = last_date == now_local.date() and now_local.time() < _MARKET_CLOSE[market]
+    if pd.isna(last_close) or unconfirmed_today:
+        return df.iloc[:-1]
+    return df
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_price_history(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     try:
@@ -69,6 +94,8 @@ def get_price_history(ticker: str, period: str = "1y", interval: str = "1d") -> 
     if getattr(idx, "tz", None) is not None:
         idx = idx.tz_localize(None)
     df.index = idx
+    if interval == "1d":
+        df = _drop_unconfirmed_bar(df, ticker)
     return df
 
 
