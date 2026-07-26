@@ -67,6 +67,25 @@ def get_twse_top_volume(n: int = 20) -> list[str]:
         return []
 
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_tpex_company_names() -> dict[str, str]:
+    """{bare TPEx code: 公司簡稱 (Chinese short name)} for every TPEx (上櫃)
+    security, from the same tpex_mainboard_quotes feed as get_tpex_top_volume.
+    Fills the 上櫃 gap left by get_twse_company_names (TWSE/上市-listed only),
+    which otherwise leaves .TWO tickers with no Chinese name source and
+    falling back to yfinance's English shortName. Returns {} on fetch failure.
+    """
+    try:
+        rows = _fetch_json(_TPEX_QUOTES_URL)
+    except Exception:
+        return {}
+    return {
+        r["SecuritiesCompanyCode"]: r["CompanyName"]
+        for r in rows
+        if r.get("SecuritiesCompanyCode") and r.get("CompanyName")
+    }
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_tpex_top_volume(n: int = 20) -> list[str]:
     """Top n TPEx (上櫃) stocks by trading volume (tpex_mainboard_quotes, cached 1 h)."""
@@ -301,13 +320,15 @@ def get_tw_company_name(ticker: str) -> str | None:
     stable offline), then the full TWSE 上市公司 name map (covers individual
     stocks generally, but not ETFs — funds aren't "公司"), then the ETF-name
     scrape (covers ETFs specifically, including 00xxxA-style actively-managed
-    ones). None if unknown (e.g. an OTC/.TWO code, or offline with nothing
-    curated)."""
+    ones), then the TPEx 上櫃 quotes feed (covers .TWO-listed stocks, which
+    the TWSE-only sources above don't). None if unknown (e.g. offline with
+    nothing curated)."""
     code = ticker.split(".")[0]
     return (
         _TW_NAMES.get(code)
         or dl.get_twse_company_names().get(code)
         or get_twse_etf_names().get(code)
+        or get_tpex_company_names().get(code)
     )
 
 
