@@ -2,6 +2,7 @@
 import json
 import re
 import ssl
+import urllib.parse
 import urllib.request
 
 import pandas as pd
@@ -12,6 +13,8 @@ from . import data_loader as dl
 _TWSE_HEADERS = {"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"}
 _TWSE_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 _TPEX_QUOTES_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+_YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search?q={q}&quotesCount=8&newsCount=0"
+_YAHOO_SEARCH_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # Some Windows environments fail TWSE/TPEx SSL chain verification; bypass it for
 # these read-only market-data endpoints (no sensitive data transmitted).
@@ -330,6 +333,84 @@ def get_tw_company_name(ticker: str) -> str | None:
         or get_twse_etf_names().get(code)
         or get_tpex_company_names().get(code)
     )
+
+
+def search_tw_local(query: str, limit: int = 8) -> list[tuple[str, str]]:
+    """(ticker, Chinese name) candidates whose code or name contains `query`
+    (case-insensitive), searched across the same sources get_tw_company_name
+    reads from — curated/TWSE company/TWSE ETF get ".TW", TPEx gets ".TWO".
+    Lets a 台股 user find a ticker by (partial) Chinese name, English/pinyin
+    fragment, or bare code without needing Yahoo's search API, which rejects
+    non-ASCII queries outright. A code already resolved by an earlier source
+    keeps that source's name (same priority order as get_tw_company_name).
+    """
+    q = query.strip().upper()
+    if not q:
+        return []
+    pool: dict[str, tuple[str, str]] = {}  # code -> (name, suffix)
+    for code, name in _TW_NAMES.items():
+        pool.setdefault(code, (name, ".TW"))
+    for code, name in dl.get_twse_company_names().items():
+        pool.setdefault(code, (name, ".TW"))
+    for code, name in get_twse_etf_names().items():
+        pool.setdefault(code, (name, ".TW"))
+    for code, name in get_tpex_company_names().items():
+        pool.setdefault(code, (name, ".TWO"))
+    matches = [
+        (f"{code}{suffix}", name) for code, (name, suffix) in pool.items()
+        if q in name.upper() or q in code
+    ]
+    matches.sort(key=lambda x: x[0])
+    return matches[:limit]
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def yahoo_ticker_search(query: str) -> list[tuple[str, str, str]]:
+    """[(symbol, name, exchange), ...] from Yahoo Finance's search
+    autocomplete endpoint, filtered to actual tradeable securities
+    (quoteType EQUITY/ETF — skips options/mutual funds/index/crypto noise).
+    Returns [] on any failure, including the 400 "Invalid Search Query"
+    Yahoo returns for non-ASCII input (e.g. Chinese) — callers combining
+    this with search_tw_local() rely on that silent no-op rather than a
+    raised exception for Chinese queries."""
+    query = query.strip()
+    if not query:
+        return []
+    url = _YAHOO_SEARCH_URL.format(q=urllib.parse.quote(query))
+    try:
+        req = urllib.request.Request(url, headers=_YAHOO_SEARCH_HEADERS)
+        payload = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    except Exception:
+        return []
+    return [
+        (r["symbol"], r.get("shortname") or r.get("longname") or r["symbol"], r.get("exchange", ""))
+        for r in payload.get("quotes", [])
+        if r.get("symbol") and r.get("quoteType") in ("EQUITY", "ETF")
+    ]
+
+
+def search_ticker(query: str, is_tw: bool, limit: int = 8) -> list[tuple[str, str]]:
+    """(ticker, display name) candidates for the "忘記代號" search box.
+
+    TW: local dict matches (search_tw_local — covers Chinese names, which
+    Yahoo's search can't) come first, then Yahoo results filtered to
+    .TW/.TWO symbols fill in anything the local lists miss. US: Yahoo
+    results filtered to symbols without a "." (this app's existing
+    convention for "not a TW/foreign-exchange ticker"). Deduped by ticker,
+    capped to `limit`.
+    """
+    seen: dict[str, str] = {}
+    if is_tw:
+        for ticker, name in search_tw_local(query, limit):
+            seen.setdefault(ticker, name)
+        for symbol, name, _exch in yahoo_ticker_search(query):
+            if symbol.endswith((".TW", ".TWO")):
+                seen.setdefault(symbol, name)
+    else:
+        for symbol, name, _exch in yahoo_ticker_search(query):
+            if "." not in symbol:
+                seen.setdefault(symbol, name)
+    return list(seen.items())[:limit]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

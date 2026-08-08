@@ -85,6 +85,9 @@ _PERSIST_EXCLUDE_PREFIXES = (
     "show_buy_", "show_sell_",
     "reco_confirmed_", "price_confirmed_", "compare_confirmed_", "fcn_confirmed_",
     "ticker_hist_pick_",
+    # 忘記代號搜尋框：一次性觸發用途，跟 ticker_hist_pick_ 同理不持久化——
+    # 記住上次的搜尋字反而只會顯示一個過期的舊查詢，沒有意義。
+    "ticker_search_",
     # st.date_input stores a datetime.date, which json.dumps can't serialize;
     # since _settings_to_save below dumps the whole session_state dict in one
     # call, one non-serializable value would break persistence for every
@@ -600,6 +603,37 @@ with tab_news:
 
 # ---------- Tab 1: Price, technical indicators & fundamentals (one ticker) ----------
 with tab_overview:
+    _mkt_key = "tw" if is_tw else "us"
+    with st.expander("🔍 忘記代號？用公司名稱搜尋（中英文皆可）"):
+        _search_query_key = f"ticker_search_query_{_mkt_key}"
+        _search_pick_key = f"ticker_search_pick_{_mkt_key}"
+
+        def _fill_from_search():
+            _sel = st.session_state.get(_search_pick_key)
+            if _sel:
+                _ticker = _sel.split("（", 1)[0]
+                # Strip the .TW/.TWO suffix so the field shows a bare code,
+                # matching what a user would type by hand (its own placeholder
+                # only ever shows bare codes, e.g. "2330"); resolve_tw_ticker
+                # re-adds the right suffix at confirm-time either way.
+                if is_tw:
+                    _ticker = _ticker.split(".")[0]
+                st.session_state[f"price_ticker_{_mkt_key}"] = _ticker
+
+        _search_query = st.text_input(
+            "公司名稱／代號（例如「台積電」「Apple」「2330」）", key=_search_query_key,
+        ).strip()
+        if _search_query:
+            _search_results = universe.search_ticker(_search_query, is_tw)
+            if _search_results:
+                st.selectbox(
+                    "搜尋結果", [f"{t}（{n}）" for t, n in _search_results],
+                    index=None, key=_search_pick_key, on_change=_fill_from_search,
+                    placeholder="選一檔帶入下方輸入框",
+                )
+            else:
+                st.caption("查無符合的標的，換個關鍵字試試。")
+
     col_ticker, col_period, col_confirm1 = st.columns([2, 1, 1])
     with col_ticker:
         if is_tw:
@@ -884,9 +918,16 @@ with tab_overview:
                        f"{(latest / prev - 1) * 100:.2f}%")
 
             # 🎯 投機操作判讀：把上面各零件（月線/均線/突破/放量/KD/MACD/
-            # 支撐壓力）合成一句操作結論＋進場/停損/目標。規則式量價紀律，
-            # 同一函式日後供鎖股區逐檔套用。
-            _chu = recommend.chu_verdict(df["Open"], df["High"], df["Low"], close, df["Volume"])
+            # 支撐壓力/型態/ADX/籌碼/半年年線/量能趨勢/背離/布林擠壓）合成
+            # 一句操作結論＋進場/停損/目標。規則式量價紀律，同一函式日後供
+            # 鎖股區逐檔套用。台股走真實三大法人籌碼，美股由 chu_verdict
+            # 內建的 CMF 代理接手，不需要在這裡另外傳。
+            _chip_val = (
+                recommend.chip_signal(primary, df["High"], df["Low"], close, df["Volume"])
+                if is_tw else None
+            )
+            _chu = recommend.chu_verdict(df["Open"], df["High"], df["Low"], close, df["Volume"],
+                                          chip=_chip_val)
             if _chu is not None:
                 st.markdown("#### 🎯 投機操作判讀")
                 _lvl = _chu["verdict_level"]
@@ -904,20 +945,44 @@ with tab_overview:
                 _tr, _sg = _chu["trend"], _chu["signal_today"]
                 _col_t, _col_s, _col_o = st.columns(3)
                 with _col_t:
-                    st.markdown(
-                        "**趨勢（生命線）**\n\n"
+                    _trend_lines = [
+                        "**趨勢（生命線）**\n",
                         f"- 月線MA20（{_tr['ma20']}）：{'站上 ✅' if _tr['above_ma20'] else '未站 ❌'}"
-                        f"（{'翻揚 ↗' if _tr['ma20_rising'] else '走平/下彎 →'}）\n"
-                        f"- 季線MA60（{_tr['ma60']}）：{'站上 ✅' if _tr['above_ma60'] else '未站 ❌'}\n"
-                        f"- 均線：{_tr['alignment']}"
-                    )
+                        f"（{'翻揚 ↗' if _tr['ma20_rising'] else '走平/下彎 →'}）",
+                        f"- 季線MA60（{_tr['ma60']}）：{'站上 ✅' if _tr['above_ma60'] else '未站 ❌'}",
+                        f"- 均線：{_tr['alignment']}",
+                    ]
+                    if _tr["above_ma120"] is not None:
+                        _trend_lines.append(
+                            f"- 半年線MA120（{_tr['ma120']}）：{'站上 ✅' if _tr['above_ma120'] else '未站 ❌'}"
+                        )
+                    if _tr["above_ma240"] is not None:
+                        _trend_lines.append(
+                            f"- 年線MA240（{_tr['ma240']}）：{'站上 ✅' if _tr['above_ma240'] else '未站 ❌'}"
+                        )
+                    if _tr["adx"] is not None:
+                        _adx_dir = "偏多" if _tr["adx_bull"] else "偏空"
+                        _adx_str = "強趨勢" if _tr["adx_strong"] else "盤整/弱"
+                        _trend_lines.append(f"- ADX（{_tr['adx']}）：{_adx_str}，{_adx_dir}方向")
+                    st.markdown("\n".join(_trend_lines))
                 with _col_s:
-                    st.markdown(
-                        "**今日訊號（量價）**\n\n"
-                        f"- 突破濾網：{_yn(_sg['breakout'])}\n"
-                        f"- 放量確認：{_yn(_sg['volume'])}\n"
-                        f"- KD 金叉：{_yn(_sg['kd_golden'])}　MACD 翻紅：{_yn(_sg['macd_red'])}"
-                    )
+                    _sig_lines = [
+                        "**今日訊號（量價）**\n",
+                        f"- 突破濾網：{_yn(_sg['breakout'])}",
+                        f"- 放量確認：{_yn(_sg['volume'])}",
+                        f"- KD 金叉：{_yn(_sg['kd_golden'])}　MACD 翻紅：{_yn(_sg['macd_red'])}",
+                    ]
+                    if abs(_sg["pattern"]) >= 0.3:
+                        _sig_lines.append(f"- 型態辨識：{'偏多' if _sg['pattern'] > 0 else '偏空'}（{_sg['pattern']:.2f}）")
+                    if _sg["chip_bullish"] is not None:
+                        _sig_lines.append(f"- 籌碼／資金流：{'偏多 ✅' if _sg['chip_bullish'] else '偏空 ❌'}")
+                    if _sg["volume_trend"] is not None:
+                        _sig_lines.append(f"- 量能趨勢：{'增溫 ↗' if _sg['volume_trend'] == 'increasing' else '降溫 ↘'}")
+                    if _sg["divergence"] != "none":
+                        _sig_lines.append(f"- RSI背離：{'頂背離 ⚠' if _sg['divergence'] == 'bearish' else '底背離 ⚠'}")
+                    if _sg["bb_squeeze"]:
+                        _sig_lines.append("- 布林通道：收窄擠壓中 ⚠")
+                    st.markdown("\n".join(_sig_lines))
                 with _col_o:
                     _stop = f"{currency}{_chu['stop']}" if _chu["stop"] is not None else "—（未站月線，先不談進場）"
                     _tgt = "、".join(f"{currency}{x}" for x in _chu["targets"]) or "—"

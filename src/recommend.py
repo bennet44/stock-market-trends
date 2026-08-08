@@ -444,6 +444,28 @@ def _fundamental_summary(info: dict) -> str:
     return "、".join(parts)
 
 
+def chip_signal(ticker: str, high: pd.Series, low: pd.Series, close: pd.Series,
+                 volume: pd.Series, inst_net: dict[str, float] | None = None) -> float:
+    """籌碼 (capital-flow) signal for a single ticker, shared by
+    build_recommendation_table and chu_verdict: TW = recent 三大法人 net
+    buy/sell shares normalized by shares outstanding (inst_net defaults to a
+    fresh dl.get_twse_institutional_net() call if not supplied — pass in the
+    whole-market dict when scoring many tickers to avoid refetching per
+    ticker); US = Chaikin Money Flow computed purely from the passed OHLCV.
+    Positive = net buying/accumulation, negative = net selling/distribution.
+    NaN when TW data is unavailable (no CMF fallback for TW, to keep this
+    consistent with build_recommendation_table's existing behavior)."""
+    if ticker.endswith((".TW", ".TWO")):
+        if inst_net is None:
+            inst_net = dl.get_twse_institutional_net()
+        info = dl.get_company_info(ticker)
+        shares = info.get("sharesOutstanding") or info.get("floatShares")
+        net_shares = inst_net.get(ticker.split(".")[0])
+        return (net_shares / shares) if (net_shares is not None and shares) else np.nan
+    cmf = ta.chaikin_money_flow(high, low, close, volume, window=min(20, max(2, len(close) - 1)))
+    return float(cmf.iloc[-1]) if len(cmf) and pd.notna(cmf.iloc[-1]) else np.nan
+
+
 def build_recommendation_table(
     tickers: list[str], period: str, risk_free_rate: float = 0.0,
     lookback_days: int | None = None, weights: dict[str, float] | None = None,
@@ -527,13 +549,7 @@ def build_recommendation_table(
 
         # 籌碼 (capital flow): TW = recent 三大法人 net normalized by shares
         # outstanding; US = Chaikin Money Flow over the window.
-        if t.endswith((".TW", ".TWO")):
-            shares = info.get("sharesOutstanding") or info.get("floatShares")
-            net_shares = inst_net.get(t.split(".")[0])
-            chip = (net_shares / shares) if (net_shares is not None and shares) else np.nan
-        else:
-            cmf = ta.chaikin_money_flow(high, low, close, volume, window=min(20, max(2, len(win) - 1)))
-            chip = cmf.iloc[-1] if len(cmf) else np.nan
+        chip = chip_signal(t, high, low, close, volume, inst_net)
 
         # 填息率 factor (存股區 weights only): needs its own 2y price fetch,
         # so only pay for it when the weight table actually scores it.
@@ -769,14 +785,28 @@ def horizon_for_hold_days(hold_days: int) -> str:
 
 
 def chu_verdict(open_: pd.Series, high: pd.Series, low: pd.Series,
-                close: pd.Series, volume: pd.Series) -> dict | None:
+                close: pd.Series, volume: pd.Series, *,
+                chip: float | None = None) -> dict | None:
     """投機式 operating read synthesised from the same rule-based pieces
     the app already computes (zhu breakout gate, 放量, 均線/月線/季線, KD/MACD,
-    支撐壓力, 型態). Returns a structured verdict dict, or None if there aren't
-    enough bars (needs the 60-day 季線). This is a heuristic encoding of the
-    methodology, not the teacher — callers must show a 非投資建議 disclaimer.
-    The whole thing is data-driven off the passed OHLCV so the 鎖股區 can reuse
+    支撐壓力, 型態, ADX, 籌碼, 背離, 布林擠壓). Returns a structured verdict
+    dict, or None if there aren't enough bars (needs the 60-day 季線). This is
+    a heuristic encoding of the methodology, not the teacher — callers must
+    show a 非投資建議 disclaimer. The whole thing is data-driven off the
+    passed OHLCV (plus the optional `chip` override) so the 鎖股區 can reuse
     it per ticker.
+
+    `chip` is an optional pre-computed 籌碼/資金流 signal (positive=net
+    buying, negative=net selling) — see chip_signal() for the TW (三大法人)
+    vs US (CMF) convention. When omitted, a Chaikin Money Flow proxy is
+    derived here directly from the passed OHLCV (same as chip_signal's US
+    branch), so the card still has a chip read for any market/ticker.
+
+    The core decision tree (stage/verdict_level/entry/stop) is unchanged from
+    the original 均線+突破 rules; the newer signals (型態/ADX/籌碼/半年年線/
+    量能趨勢/背離/布林擠壓) only add supplementary trend/signal fields and
+    conditional notes — they reinforce or flag a conflict with the verdict,
+    they don't override it.
 
     verdict_level ∈ {stand_aside, caution, wait_pullback, buy_watch,
     hold_bullish, neutral}. Returned keys: trend, signal_today, overheated,
@@ -823,11 +853,65 @@ def chu_verdict(open_: pd.Series, high: pd.Series, low: pd.Series,
     targets = [round(x, 1) for x in res[:2]]
     supports = [round(x, 1) for x in sup[:2]]
 
+    # 型態辨識: same shape-pattern composite already used by technical_bias's
+    # scoring (positive=bullish structure/candle, negative=bearish, 0=neither).
+    shape = pattern_signal(open_, high, low, close)
+
+    # ADX 趨勢強度/方向 — same reading as technical_analysis_brief's ADX row.
+    adx_df = ta.adx(high, low, close)
+    _adx_val, _adx_pdi, _adx_mdi = (adx_df[col].iloc[-1] for col in ("adx", "plus_di", "minus_di"))
+    adx_val = float(_adx_val) if pd.notna(_adx_val) else None
+    adx_strong = (adx_val >= 25) if adx_val is not None else None
+    adx_bull = (float(_adx_pdi) > float(_adx_mdi)) if pd.notna(_adx_pdi) and pd.notna(_adx_mdi) else None
+
+    # 籌碼/資金流: caller-supplied (TW real 三大法人 net, via chip_signal)
+    # takes priority; otherwise derive a CMF proxy from the OHLCV on hand.
+    if chip is None:
+        _cmf = ta.chaikin_money_flow(high, low, close, volume, window=min(20, max(2, len(close) - 1)))
+        chip = float(_cmf.iloc[-1]) if len(_cmf) and pd.notna(_cmf.iloc[-1]) else np.nan
+    chip_bullish = (chip > 0) if pd.notna(chip) else None
+
+    # 半年線/年線: only when there's enough history; None (not False) when unknown.
+    ma120 = float(ta.sma(close, 120).iloc[-1]) if len(close) >= 120 and pd.notna(ta.sma(close, 120).iloc[-1]) else None
+    ma240 = float(ta.sma(close, 240).iloc[-1]) if len(close) >= 240 and pd.notna(ta.sma(close, 240).iloc[-1]) else None
+    above_ma120 = (c > ma120) if ma120 is not None else None
+    above_ma240 = (c > ma240) if ma240 is not None else None
+
+    # 量能趨勢: is recent volume (5日均量) trending above/below its 20日均量,
+    # i.e. building or fading — not just today's single-bar 放量確認.
+    _vol_ma5, _vol_ma20 = ta.sma(volume, 5).iloc[-1], ta.sma(volume, 20).iloc[-1]
+    if pd.notna(_vol_ma5) and pd.notna(_vol_ma20):
+        volume_trend = "increasing" if _vol_ma5 > _vol_ma20 else "decreasing"
+    else:
+        volume_trend = None
+
+    # RSI 背離: classic price-vs-momentum divergence on the two most recent
+    # swing pivots — an early warning that a move may be running out of steam.
+    divergence = ta.momentum_divergence(high, low, ta.rsi(close))
+
+    # 布林通道擠壓: current bandwidth in the bottom 20% of its own trailing
+    # range → volatility compression, often precedes a bigger directional move.
+    bandwidth = (bb["upper"] - bb["lower"]) / bb["mid"]
+    _bw_hist = bandwidth.iloc[-120:].dropna()
+    bb_squeeze = (
+        pd.notna(bandwidth.iloc[-1]) and len(_bw_hist) >= 20
+        and bandwidth.iloc[-1] <= _bw_hist.quantile(0.2)
+    )
+
     trend = {"above_ma20": above_ma20, "ma20_rising": ma20_rising,
              "above_ma60": above_ma60, "alignment": alignment,
-             "ma20": round(ma20_now, 1), "ma60": round(ma60, 1)}
+             "ma20": round(ma20_now, 1), "ma60": round(ma60, 1),
+             "ma120": round(ma120, 1) if ma120 is not None else None,
+             "above_ma120": above_ma120,
+             "ma240": round(ma240, 1) if ma240 is not None else None,
+             "above_ma240": above_ma240,
+             "adx": round(adx_val, 1) if adx_val is not None else None,
+             "adx_strong": adx_strong, "adx_bull": adx_bull}
     signal_today = {"breakout": breakout, "volume": vol_ok,
-                    "kd_golden": kd_golden, "macd_red": macd_red}
+                    "kd_golden": kd_golden, "macd_red": macd_red,
+                    "pattern": round(shape, 2), "chip_bullish": chip_bullish,
+                    "volume_trend": volume_trend, "divergence": divergence,
+                    "bb_squeeze": bool(bb_squeeze)}
     notes = []
 
     # ── 投機操作 決策樹 ───────────────────────────────────────────
@@ -872,8 +956,58 @@ def chu_verdict(open_: pd.Series, high: pd.Series, low: pd.Series,
         notes.append("尚未站上季線（中期多空分界），中期趨勢未完全轉強。")
     if overheated and level not in ("stand_aside", "caution"):
         notes.append(f"短線過熱（J={j:.0f}、布林%B={pct_b*100:.0f}%、今日{day_chg*100:+.1f}%），追高風險高。")
+
+    # ADX：用真實算出的趨勢強度取代原本「均線糾結時ADX大概偏低」的猜測。
     if alignment == "均線糾結" and level == "neutral":
-        notes.append("均線糾結、ADX 通常偏低，盤整中假突破多，等量價明確再動。")
+        if adx_strong is True:
+            notes.append(f"均線糾結，但 ADX={adx_val:.0f} 顯示趨勢動能正在增強"
+                          f"（{'偏多' if adx_bull else '偏空'}方向），留意醞釀變盤。")
+        elif adx_strong is False:
+            notes.append(f"均線糾結、ADX={adx_val:.0f} 偏低，盤整中假突破多，等量價明確再動。")
+        else:
+            notes.append("均線糾結，ADX 資料不足無法判斷趨勢動能，等量價明確再動。")
+
+    bullish_levels, bearish_levels = ("buy_watch", "hold_bullish"), ("caution", "stand_aside")
+
+    # 型態辨識：跟目前判讀方向一致時強化、衝突時加警示。
+    if shape >= 0.3:
+        if level in bearish_levels:
+            notes.append(f"型態辨識偏多（{shape:.2f}），與目前保守判讀不一致，留意止跌訊號提前浮現。")
+        elif level in bullish_levels:
+            notes.append(f"型態辨識同步偏多（{shape:.2f}），與判讀方向一致。")
+    elif shape <= -0.3:
+        if level in bullish_levels:
+            notes.append(f"型態辨識偏空（{shape:.2f}），與目前偏多判讀不一致，追高風險提高。")
+        elif level in bearish_levels:
+            notes.append(f"型態辨識同步偏空（{shape:.2f}），與觀望判讀一致。")
+
+    # 籌碼／資金流：跟法人/資金方向衝突時警示，反向轉強時提示可能領先價格。
+    if chip_bullish is False and level in bullish_levels:
+        notes.append("籌碼／資金流偏空（法人賣超或資金流出），與目前偏多判讀不一致，追高風險較高。")
+    elif chip_bullish is True and level in bearish_levels:
+        notes.append("籌碼／資金流轉強（法人買超或資金流入），留意止跌訊號，可能提前於價格轉強。")
+
+    # 半年線/年線：延伸既有的季線那句，往更長期看一層。
+    if above_ma20 and above_ma120 is False:
+        notes.append("站上月線但仍在半年線之下，屬短線反彈，中期趨勢尚未確立。")
+    elif above_ma20 and above_ma120 and above_ma240 is False:
+        notes.append("站穩月線與半年線，但仍在年線之下，長期趨勢仍待確認。")
+
+    # RSI 背離：經典的動能提前反轉警訊。
+    if divergence == "bearish":
+        notes.append("價格創高但 RSI 未同步創高（頂背離），留意漲多拉回風險。")
+    elif divergence == "bullish":
+        notes.append("價格破底但 RSI 未同步破底（底背離），留意止跌反彈機會。")
+
+    # 布林通道擠壓：波動度壓縮，常是變盤前兆。
+    if bb_squeeze:
+        notes.append("布林通道收窄（波動度壓縮），變盤機率上升，留意方向選擇。")
+
+    # 量能趨勢：不只看今天，看近期量能是否持續放大/萎縮。
+    if level in ("buy_watch", "wait_pullback") and volume_trend == "decreasing":
+        notes.append("近期量能呈遞減趨勢，追價力道可能減弱，突破有效性打折扣。")
+    elif level == "hold_bullish" and volume_trend == "increasing":
+        notes.append("近期量能同步遞增，動能延續性較佳。")
 
     return {
         "trend": trend, "signal_today": signal_today, "overheated": overheated,

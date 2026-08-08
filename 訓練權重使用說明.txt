@@ -30,6 +30,11 @@
 --------------------------------------------------------------------
  步驟 2：執行訓練（跑完會問你要不要套用）
 --------------------------------------------------------------------
+  注意：不要用 VSCode 右上角的「Run Python File」▷ 按鈕執行，那個按鈕
+  等同直接跑 `python train_weights.py`、不會帶任何參數，一定會出現
+  "error: the following arguments are required: --market"。
+  請直接在終端機貼下面完整指令執行：
+
   台股：
   .\.venv\Scripts\python.exe train_weights.py --market tw --years 5
 

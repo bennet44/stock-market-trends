@@ -134,6 +134,34 @@ def _pivot_points(high: pd.Series, low: pd.Series, window: int) -> list[tuple[in
     return pivots
 
 
+def momentum_divergence(high: pd.Series, low: pd.Series, indicator: pd.Series,
+                         window: int = 5) -> str:
+    """Classic price/momentum divergence between the two most recent same-side
+    swing pivots (reuses _pivot_points, the same detector behind
+    support_resistance_levels/chart_patterns): bearish when price makes a
+    higher high but `indicator` (e.g. RSI) makes a lower high at that pivot;
+    bullish when price makes a lower low but `indicator` makes a higher low.
+    `indicator` must be positionally aligned with high/low (same index order).
+    Returns "bullish", "bearish", or "none" (fewer than 2 same-side pivots, or
+    no divergence). If both directions fire (rare), the more recent pivot wins.
+    """
+    pivots = _pivot_points(high, low, window)
+    highs = [(i, p) for i, p, k in pivots if k == "high"]
+    lows = [(i, p) for i, p, k in pivots if k == "low"]
+    ind = indicator.values
+    bearish = (len(highs) >= 2 and highs[-1][1] > highs[-2][1]
+               and ind[highs[-1][0]] < ind[highs[-2][0]])
+    bullish = (len(lows) >= 2 and lows[-1][1] < lows[-2][1]
+               and ind[lows[-1][0]] > ind[lows[-2][0]])
+    if bearish and bullish:
+        return "bearish" if highs[-1][0] > lows[-1][0] else "bullish"
+    if bearish:
+        return "bearish"
+    if bullish:
+        return "bullish"
+    return "none"
+
+
 def support_resistance_levels(
     high: pd.Series, low: pd.Series, close: pd.Series,
     window: int = 10, tolerance: float = 0.015, max_levels: int = 4,
