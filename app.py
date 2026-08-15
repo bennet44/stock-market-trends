@@ -258,7 +258,7 @@ def _signal_rgb(side: str, frac: float) -> str:
     return f"rgb({r},{g},{b})"
 
 
-def _render_chart(fig: go.Figure, analysis_mode: bool = False) -> None:
+def _render_chart(fig: go.Figure, analysis_mode: bool = False, crosshair: bool = False) -> None:
     """Render a Plotly chart.
 
     By default, drag/pan is disabled so mobile scroll isn't trapped by the
@@ -266,6 +266,11 @@ def _render_chart(fig: go.Figure, analysis_mode: bool = False) -> None:
     OHLC values regardless of this mode. When analysis_mode is on, drag/pan
     and scroll-to-zoom are re-enabled for users who want to zoom into a
     specific range — trading off easy page scrolling for that.
+
+    `crosshair` turns on the quote-app style 查價 readout (十字準星 + one
+    combined tooltip for everything on that date), used on the price chart.
+    It is off elsewhere because on small single-series panels the spike
+    lines add clutter without adding information.
     """
     if analysis_mode:
         fig.update_layout(dragmode="zoom")
@@ -273,6 +278,28 @@ def _render_chart(fig: go.Figure, analysis_mode: bool = False) -> None:
     else:
         fig.update_layout(dragmode=False)
         config = {"displayModeBar": False, "scrollZoom": False}
+    if crosshair:
+        # hovermode="x unified" gathers K 棒 + 均線 + 布林 into a single box
+        # instead of one tooltip per trace — on a phone that is the
+        # difference between a readable quote and a pile of overlapping
+        # labels.
+        #
+        # hoverdistance is left at the default on purpose. Setting it to -1
+        # ("unlimited") looked like a mobile-friendliness win, but it forces
+        # every trace to report *some* point no matter how far away, which
+        # made the candlestick show a different bar than the one the
+        # crosshair sat on — a quote app showing the wrong bar's price is
+        # far worse than one that needs a slightly more accurate tap.
+        fig.update_layout(
+            hovermode="x unified",
+            hoverlabel=dict(font_size=13, namelength=-1),
+        )
+        # spikesnap="data" 讓準星吸附到實際的 K 棒，而不是停在手指按到的
+        # 座標——否則十字線位置會與浮動視窗顯示的那根 K 棒對不上。
+        fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="data",
+                         spikethickness=1, spikedash="dot", spikecolor="#888")
+        fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="data",
+                         spikethickness=1, spikedash="dot", spikecolor="#888")
     st.plotly_chart(fig, use_container_width=True, config=config)
 
 
@@ -775,10 +802,15 @@ with tab_overview:
                 st.session_state[_hist_key] = sorted(set(_hist + [_hist_code]))[-50:]
 
             close = df["Close"]
-            sma5, sma10, sma20 = ta.sma(close, 5), ta.sma(close, 10), ta.sma(close, 20)
-            bb = ta.bollinger_bands(close)
 
-            st.caption("提示：將滑鼠移到圖上（手機點一下 K 棒）即可看到當天開盤／最高／最低／收盤價，不需開啟下方分析模式。")
+            st.caption("提示：手機直接點一下 K 棒（電腦移到圖上）就會顯示該根的開高低收與十字準星，不需開啟下方分析模式。")
+            _mk_kbar = "tw" if is_tw else "us"
+            _kbar = st.radio(
+                "K 線週期", ["日K", "週K", "月K"], horizontal=True,
+                key=f"kbar_period_{_mk_kbar}",
+                help="切換 K 棒週期。週K／月K 由日線資料彙整（開＝期初開盤、高低＝期間極值、"
+                     "收＝期末收盤、量＝加總），圖上的均線與布林通道會跟著換算成週／月週期。",
+            )
             # Overlay toggles: the full stack (SMA×3 + 布林×2 + 趨勢×3 + 支撐/壓力
             # ×4) buried the candles under 12+ legend items, so each line
             # family gets its own checkbox — off means not drawn at all (no
@@ -807,11 +839,26 @@ with tab_overview:
             with _cb_pat:
                 show_pattern = st.checkbox("形態標註", key=f"overlay_pattern_{_mk}")
 
-            # 形態辨識（K 棒 + 價格結構）— computed once here, drawn on the
-            # chart when 形態標註 is ticked and always listed in the 形態辨識
-            # section further down.
+            # 形態辨識（K 棒 + 價格結構）— 這組固定用**日線**計算，供下方
+            # 「形態辨識」文字區塊使用；K 棒形態本來就是以日為單位定義的。
             candle_pats = ta.candlestick_patterns(df["Open"], df["High"], df["Low"], df["Close"])
             struct_pats = ta.chart_patterns(df["High"], df["Low"], close)
+
+            # 圖表專用資料框：週K／月K 只影響「畫出來的圖」，下方的技術指標、
+            # 投機操作判讀、建議買賣價一律維持日線——那些邏輯與門檻都是以日線
+            # 校準的，跟著換週期會讓數值失真。
+            cdf = df if _kbar == "日K" else dl.resample_ohlcv(df, _kbar)
+            cclose = cdf["Close"]
+            # 均線／布林同步換算成該週期（週K 的 SMA5 就是 5 週均線）。
+            c_sma5, c_sma10, c_sma20 = ta.sma(cclose, 5), ta.sma(cclose, 10), ta.sma(cclose, 20)
+            c_bb = ta.bollinger_bands(cclose)
+            if _kbar == "日K":
+                c_candle_pats, c_struct_pats = candle_pats, struct_pats
+            else:
+                # 重採樣後 bar 索引全變了，註記必須用同一組資料重算，否則會標到錯的位置。
+                c_candle_pats = ta.candlestick_patterns(
+                    cdf["Open"], cdf["High"], cdf["Low"], cdf["Close"])
+                c_struct_pats = ta.chart_patterns(cdf["High"], cdf["Low"], cclose)
 
             # "三竹股市" look for TW stocks: 漲=red／跌=green candles (the reverse of
             # the US green-up/red-down convention). Chart background follows the dark
@@ -821,47 +868,47 @@ with tab_overview:
 
             fig = go.Figure()
             fig.add_trace(go.Candlestick(
-                x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+                x=cdf.index, open=cdf["Open"], high=cdf["High"], low=cdf["Low"], close=cdf["Close"],
                 name=primary_label,
                 increasing_line_color=up_color, increasing_fillcolor=up_color,
                 decreasing_line_color=down_color, decreasing_fillcolor=down_color,
             ))
             if show_sma:
-                fig.add_trace(go.Scatter(x=df.index, y=sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
-                fig.add_trace(go.Scatter(x=df.index, y=sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
-                fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
+                fig.add_trace(go.Scatter(x=cdf.index, y=c_sma5, name="SMA5", line=dict(width=1, color="#1f77b4")))
+                fig.add_trace(go.Scatter(x=cdf.index, y=c_sma10, name="SMA10", line=dict(width=1, color="#ff7f0e")))
+                fig.add_trace(go.Scatter(x=cdf.index, y=c_sma20, name="SMA20", line=dict(width=1, color="#9467bd")))
             if show_bb:
                 # One legend entry for the pair (legendgroup): clicking it
                 # toggles both bands at once.
-                fig.add_trace(go.Scatter(x=df.index, y=bb["upper"], name="布林通道",
+                fig.add_trace(go.Scatter(x=cdf.index, y=c_bb["upper"], name="布林通道",
                                           legendgroup="bb",
                                           line=dict(width=1, dash="dot"), opacity=0.5))
-                fig.add_trace(go.Scatter(x=df.index, y=bb["lower"], name="布林通道",
+                fig.add_trace(go.Scatter(x=cdf.index, y=c_bb["lower"], name="布林通道",
                                           legendgroup="bb", showlegend=False,
                                           line=dict(width=1, dash="dot"), opacity=0.5))
             if show_trend:
                 # Linear regression trend channel — one legend entry for all 3 lines.
-                lr = ta.linear_regression_channel(close)
-                fig.add_trace(go.Scatter(x=df.index, y=lr["mid"], name="趨勢通道",
+                lr = ta.linear_regression_channel(cclose)
+                fig.add_trace(go.Scatter(x=cdf.index, y=lr["mid"], name="趨勢通道", hoverinfo="skip",
                                           legendgroup="trend",
                                           line=dict(color="#e67e22", width=1.5, dash="dash"), opacity=0.9))
-                fig.add_trace(go.Scatter(x=df.index, y=lr["upper"], name="趨勢通道",
-                                          legendgroup="trend", showlegend=False,
+                fig.add_trace(go.Scatter(x=cdf.index, y=lr["upper"], name="趨勢通道",
+                                          legendgroup="trend", showlegend=False, hoverinfo="skip",
                                           line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
-                fig.add_trace(go.Scatter(x=df.index, y=lr["lower"], name="趨勢通道",
-                                          legendgroup="trend", showlegend=False,
+                fig.add_trace(go.Scatter(x=cdf.index, y=lr["lower"], name="趨勢通道",
+                                          legendgroup="trend", showlegend=False, hoverinfo="skip",
                                           line=dict(color="#e67e22", width=1, dash="dot"), opacity=0.75))
             if show_sr:
                 # Support / Resistance pivot levels, trimmed to the 2 nearest
                 # to the current price each. One legend entry per side; the
                 # price of each line sits as a small label at its right end
                 # (the legend no longer enumerates values).
-                _sup_levels, _res_levels = ta.support_resistance_levels(df["High"], df["Low"], close)
-                _x0, _x1 = df.index[0], df.index[-1]
+                _sup_levels, _res_levels = ta.support_resistance_levels(cdf["High"], cdf["Low"], cclose)
+                _x0, _x1 = cdf.index[0], cdf.index[-1]
                 for _si, lv in enumerate(_sup_levels[:2]):
                     fig.add_trace(go.Scatter(
                         x=[_x0, _x1], y=[lv, lv], mode="lines",
-                        name="支撐", legendgroup="support", showlegend=_si == 0,
+                        name="支撐", legendgroup="support", showlegend=_si == 0, hoverinfo="skip",
                         line=dict(color="limegreen", width=1, dash="dash"), opacity=0.75,
                     ))
                     fig.add_annotation(x=_x1, y=lv, text=f"{lv:.1f}", showarrow=False,
@@ -869,41 +916,41 @@ with tab_overview:
                 for _ri, lv in enumerate(_res_levels[:2]):
                     fig.add_trace(go.Scatter(
                         x=[_x0, _x1], y=[lv, lv], mode="lines",
-                        name="壓力", legendgroup="resistance", showlegend=_ri == 0,
+                        name="壓力", legendgroup="resistance", showlegend=_ri == 0, hoverinfo="skip",
                         line=dict(color="tomato", width=1, dash="dash"), opacity=0.75,
                     ))
                     fig.add_annotation(x=_x1, y=lv, text=f"{lv:.1f}", showarrow=False,
                                        xanchor="left", font=dict(size=10, color="tomato"))
             if show_pattern:
                 # 價格結構形態：pivot 點連線＋名稱標籤＋頸線虛線
-                for _spi, _sp in enumerate(struct_pats):
-                    _px = [df.index[i] for i, _ in _sp["points"]]
+                for _spi, _sp in enumerate(c_struct_pats):
+                    _px = [cdf.index[i] for i, _ in _sp["points"]]
                     _py = [p for _, p in _sp["points"]]
                     _sp_color = up_color if _sp["side"] == "bull" else down_color if _sp["side"] == "bear" else "#d4b106"
                     fig.add_trace(go.Scatter(
                         x=_px, y=_py, mode="lines+markers",
                         name="形態", legendgroup="pattern", showlegend=_spi == 0,
                         line=dict(color=_sp_color, width=2), marker=dict(size=7, color=_sp_color),
-                        opacity=0.9, hovertext=_sp["name"], hoverinfo="text",
+                        opacity=0.9, hoverinfo="skip",
                     ))
                     fig.add_annotation(x=_px[-1], y=_py[-1], text=_sp["name"], showarrow=False,
                                        yshift=14 if _sp["side"] != "bull" else -14,
                                        font=dict(size=11, color=_sp_color))
                     if _sp.get("neckline"):
                         fig.add_trace(go.Scatter(
-                            x=[_px[0], df.index[-1]], y=[_sp["neckline"]] * 2, mode="lines",
+                            x=[_px[0], cdf.index[-1]], y=[_sp["neckline"]] * 2, mode="lines",
                             legendgroup="pattern", showlegend=False,
                             line=dict(color=_sp_color, width=1, dash="dot"), opacity=0.6,
-                            hovertext=f"{_sp['name']} 頸線 {_sp['neckline']:.1f}", hoverinfo="text",
+                            hoverinfo="skip",
                         ))
                 # K 棒形態：對應 K 棒上/下方小標籤（偏多在下方、偏空在上方）
-                for _cp in candle_pats:
+                for _cp in c_candle_pats:
                     _ci = _cp["bar"]
                     _c_color = up_color if _cp["side"] == "bull" else down_color if _cp["side"] == "bear" else "#d4b106"
                     _below = _cp["side"] == "bull"
                     fig.add_annotation(
-                        x=df.index[_ci],
-                        y=float(df["Low"].iloc[_ci]) if _below else float(df["High"].iloc[_ci]),
+                        x=cdf.index[_ci],
+                        y=float(cdf["Low"].iloc[_ci]) if _below else float(cdf["High"].iloc[_ci]),
                         text=("▲" if _below else "▼" if _cp["side"] == "bear" else "◆") + _cp["name"],
                         showarrow=False, yshift=-12 if _below else 12,
                         font=dict(size=10, color=_c_color),
@@ -911,15 +958,17 @@ with tab_overview:
 
             fig.update_layout(height=600, xaxis_rangeslider_visible=False,
                                margin=dict(t=80, b=20, r=80), legend=legend_top)
-            _render_chart(fig, analysis_mode)
+            _render_chart(fig, analysis_mode, crosshair=True)
 
+            # 成交量跟著 K 棒週期走（週K 顯示週成交量），否則圖上下兩塊的
+            # x 軸密度會對不起來。
             vol_colors = [
                 up_color if c >= o else down_color
-                for o, c in zip(df["Open"], df["Close"])
+                for o, c in zip(cdf["Open"], cdf["Close"])
             ]
-            vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], name="Volume", marker_color=vol_colors))
-            vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title="成交量")
-            _render_chart(vol_fig, analysis_mode)
+            vol_fig = go.Figure(go.Bar(x=cdf.index, y=cdf["Volume"], name="Volume", marker_color=vol_colors))
+            vol_fig.update_layout(height=180, margin=dict(t=10, b=10), title=f"成交量（{_kbar}）")
+            _render_chart(vol_fig, analysis_mode, crosshair=True)
 
             col1, col2, col3 = st.columns(3)
             with col1:

@@ -99,6 +99,27 @@ def get_price_history(ticker: str, period: str = "1y", interval: str = "1d") -> 
     return df
 
 
+_RESAMPLE_RULES = {"週K": "W-FRI", "月K": "ME"}
+
+
+def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Aggregate a daily OHLCV frame into weekly/monthly bars for chart
+    display (`rule` is a key of _RESAMPLE_RULES, e.g. "週K").
+
+    Open = first day's open, High/Low = period extremes, Close = last day's
+    close, Volume = summed — the standard K-bar rollup. Periods with no
+    trading days are dropped so holiday weeks don't render as gaps.
+
+    Weekly bars are labelled by their Friday (W-FRI) even when that Friday
+    was a market holiday, matching how quote apps label the week.
+    """
+    out = df.resample(_RESAMPLE_RULES[rule]).agg({
+        "Open": "first", "High": "max", "Low": "min",
+        "Close": "last", "Volume": "sum",
+    })
+    return out.dropna(subset=["Open", "Close"])
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_multi_close(tickers: list[str], period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     closes = {}
