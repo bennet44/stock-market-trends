@@ -184,6 +184,76 @@ def combined_ic(panel: pd.DataFrame, weights: dict[str, float]) -> float:
     return per_date.dropna().mean()
 
 
+# How many top-scoring picks the hit-rate view scores, mirroring the 買賣建議
+# tab's default Top N so the reported win rate matches what a user would see.
+WIN_TOP_N = 15
+
+
+def win_metrics(panel: pd.DataFrame, weights: dict[str, float], top_n: int = WIN_TOP_N) -> dict:
+    """Hit-rate view of the same panel Rank IC scores, in the terms a user
+    actually reads the 買賣建議 list in: on each rebalance date take the
+    `top_n` highest-scoring tickers (top_n=15 mirrors the tab's default Top N)
+    and measure how those picks actually did.
+
+    Rank IC answers "does the whole ordering correlate with forward returns",
+    which is not the same question as "did my picks make money" — a 0.01 IC
+    can coexist with a coin-flip hit rate. Reported per weighting so trained
+    and current can be compared on the metric being optimized *and* the one
+    being lived with.
+
+    `weights` must be panel-keyed (TREND_KEY_PANEL, not the live trend name).
+    Returns rates in [0,1]; excess is a return fraction.
+    """
+    score = sum(panel[f] * w for f, w in weights.items() if f in panel)
+    tmp = pd.DataFrame({"score": score, "fwd_ret": panel["fwd_ret"]})
+    pos, beat, excess = [], [], []
+    for _d, g in tmp.groupby(level="date"):
+        if len(g) < top_n:
+            continue
+        top = g.nlargest(top_n, "score")
+        med = g["fwd_ret"].median()
+        pos.append((top["fwd_ret"] > 0).mean())
+        beat.append((top["fwd_ret"] > med).mean())
+        excess.append(top["fwd_ret"].mean() - med)
+    return {
+        "topn_pos_rate": float(np.mean(pos)) if pos else np.nan,
+        "topn_beat_median_rate": float(np.mean(beat)) if beat else np.nan,
+        "topn_avg_excess": float(np.mean(excess)) if excess else np.nan,
+    }
+
+
+def is_improvement(trained_folds: list[float], current_folds: list[float]) -> tuple[bool, str]:
+    """Did training beat the current weights *reliably*, not just on average?
+
+    With only a handful of OOS folds, a bare `mean(trained) > mean(current)`
+    adopts differences far smaller than the fold-to-fold spread — that is how
+    a +0.0002 edge (against a ±0.015 swing between folds) got reported as a
+    win. Both guards must hold:
+      1. consistency — every fold improves (min diff > 0), so one lucky block
+         can't carry a losing average;
+      2. magnitude — mean diff exceeds the std of the per-fold diffs, i.e. the
+         edge is bigger than its own noise.
+    Returns (adopt, human-readable Chinese reason) — the reason is printed
+    verbatim so the verdict is never a bare number.
+    """
+    pairs = [(t, c) for t, c in zip(trained_folds, current_folds)
+             if not (np.isnan(t) or np.isnan(c))]
+    if not pairs:
+        return False, "無有效的樣本外折，無法判定"
+    diffs = np.array([t - c for t, c in pairs])
+    mean_d, std_d = float(diffs.mean()), float(diffs.std())
+    if mean_d <= 0:
+        return False, f"平均勝差 {mean_d:+.4f}（沒有贏過目前實際在用的權重）"
+    if diffs.min() <= 0:
+        n_lose = int((diffs <= 0).sum())
+        return False, (f"平均勝差 {mean_d:+.4f}，但 {len(diffs)} 折中有 {n_lose} 折"
+                       f"輸給現行權重（未穩定勝出）")
+    if mean_d <= std_d:
+        return False, (f"平均勝差 {mean_d:+.4f} 小於折間標準差 {std_d:.4f}"
+                       f"（差距在雜訊範圍內）")
+    return True, f"平均勝差 {mean_d:+.4f}，每折皆勝且大於折間標準差 {std_d:.4f}"
+
+
 def _cap_renormalize(weights: dict[str, float], cap: float, budget: float) -> dict[str, float]:
     """Clamp each weight to <= cap, redistributing the excess proportionally to
     the factors still below cap, so the total stays == budget. Water-filling
@@ -259,19 +329,31 @@ def optimize_weights(panel: pd.DataFrame, horizon: str) -> dict[str, float]:
 
 
 def walk_forward(
-    panel: pd.DataFrame, horizon: str, n_splits: int = 4
+    panel: pd.DataFrame, horizon: str, market: str, n_splits: int = 4
 ) -> dict:
     """Time-ordered out-of-sample evaluation.
 
     Splits the rebalance dates into `n_splits` contiguous blocks; for each block
     (after the first) trains weights on all earlier blocks and measures combined
-    Rank IC on that held-out block, for both the trained weights and the current
-    hand-tuned weights. Returns mean OOS IC for each, so you can see whether
-    training actually helps before adopting the weights.
+    Rank IC on that held-out block, for both the trained weights and the
+    weights currently in effect for `market`.
+
+    The comparison baseline is deliberately `recommend.weights_for(market)` —
+    the hand-tuned table *overlaid with this market's already-applied trained
+    overrides*, i.e. what the app actually scores with today — NOT the raw
+    FACTOR_WEIGHTS_BY_HORIZON. Comparing against the raw baseline made every
+    rerun report "trained wins" even when the new weights were worse than the
+    ones already in production, so repeated training drifted in place or
+    regressed. (optimize_weights still *blends toward* the raw baseline; that
+    is intentional — see TRAIN_BLEND — so each fit refines from a clean
+    starting point instead of compounding on the last run.)
+
+    Returns per-fold IC series for both sides plus their means, so a caller
+    can tell a consistent win from a sub-noise fluke (see is_improvement).
     """
     dates = panel.index.get_level_values("date").unique().sort_values()
     blocks = np.array_split(dates, n_splits)
-    current = recommend.FACTOR_WEIGHTS_BY_HORIZON[horizon]
+    current = recommend.weights_for(market == "tw")[horizon]
     # Key the current row against the panel's trend column so its trend weight
     # actually participates in the comparison (combined_ic skips keys the
     # panel doesn't have).
@@ -286,6 +368,7 @@ def walk_forward(
         return {(TREND_KEY_LIVE if f == TREND_KEY_PANEL else f): v for f, v in w.items()}
 
     trained_ics, current_ics, last_weights = [], [], None
+    trained_wins, current_wins = [], []
     for k in range(1, n_splits):
         train_dates = dates[dates <= blocks[k - 1][-1]]
         test_dates = blocks[k]
@@ -297,10 +380,21 @@ def walk_forward(
         last_weights = w
         trained_ics.append(combined_ic(test_panel, w))
         current_ics.append(combined_ic(test_panel, current_panel_keyed))
+        trained_wins.append(win_metrics(test_panel, w))
+        current_wins.append(win_metrics(test_panel, current_panel_keyed))
+
+    def _avg_wins(rows: list[dict]) -> dict:
+        if not rows:
+            return {}
+        return {k: float(np.nanmean([r[k] for r in rows])) for k in rows[0]}
 
     return {
         "oos_ic_trained": float(np.nanmean(trained_ics)) if trained_ics else np.nan,
         "oos_ic_current": float(np.nanmean(current_ics)) if current_ics else np.nan,
+        "oos_ic_trained_folds": trained_ics,
+        "oos_ic_current_folds": current_ics,
+        "win_trained": _avg_wins(trained_wins),
+        "win_current": _avg_wins(current_wins),
         "weights_last_fold": _live_keys(last_weights),
         "weights_full": _live_keys(optimize_weights(panel, horizon)),
     }

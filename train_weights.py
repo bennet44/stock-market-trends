@@ -85,6 +85,22 @@ def _print_diff(before: dict[str, float], after: dict[str, float]) -> None:
         print(f"    {f:<14}{b:>8.2f}{a:>8.2f}{d:>+9.2f}{mark}")
 
 
+def _print_win_rates(current: dict, trained: dict) -> None:
+    """實際勝率並排表。Rank IC 衡量的是「整體排序準不準」，跟「選出來的標的
+    有沒有賺」不是同一件事——IC 0.01 也可能對應到接近丟銅板的勝率，所以兩個
+    都印出來一起看。空 dict（折數不足）時整段跳過。"""
+    if not current and not trained:
+        return
+    print(f"\n  實際勝率（前 {backtest.WIN_TOP_N} 名）")
+    print(f"    {'':<10}{'為正%':>9}{'打敗中位數%':>13}{'平均超額':>11}")
+    for label, m in (("目前在用", current), ("訓練後", trained)):
+        if not m:
+            continue
+        print(f"    {label:<10}{m['topn_pos_rate']*100:>8.1f}%"
+              f"{m['topn_beat_median_rate']*100:>12.1f}%"
+              f"{m['topn_avg_excess']*100:>10.2f}%")
+
+
 def _load_prices(tickers: list[str], years: int) -> dict[str, pd.DataFrame]:
     period = f"{years}y"
     out = {}
@@ -126,10 +142,15 @@ def main() -> None:
             continue
         print("Per-factor Rank IC:")
         print(backtest.factor_ic(panel).round(4).to_string())
-        wf = backtest.walk_forward(panel, horizon)
-        better = (wf["oos_ic_trained"] or 0) > (wf["oos_ic_current"] or 0)
-        print(f"\nOut-of-sample mean Rank IC:  trained={wf['oos_ic_trained']:.4f}  "
-              f"current={wf['oos_ic_current']:.4f}  -> {'TRAINED WINS' if better else 'keep current'}")
+        wf = backtest.walk_forward(panel, horizon, args.market)
+        better, reason = backtest.is_improvement(
+            wf["oos_ic_trained_folds"], wf["oos_ic_current_folds"])
+        print("\nOut-of-sample Rank IC（對照：目前實際在用的權重）")
+        print("  每折 trained：" + "".join(f"{x:>10.4f}" for x in wf["oos_ic_trained_folds"]))
+        print("  每折 current：" + "".join(f"{x:>10.4f}" for x in wf["oos_ic_current_folds"]))
+        print(f"  平均 trained={wf['oos_ic_trained']:.4f}  current={wf['oos_ic_current']:.4f}")
+        print(f"  -> {'TRAINED WINS' if better else 'keep current'}：{reason}")
+        _print_win_rates(wf["win_current"], wf["win_trained"])
         trained_all[horizon] = _normalized_row(wf["weights_full"], horizon)
         if horizon not in backtest.TRAINABLE_HORIZONS:
             print("  (long 不採用：資料不足以穩健擬合長線持有，權重維持手調)")
@@ -155,9 +176,12 @@ def main() -> None:
             verdict = "TRAINED WINS（可套用）" if horizon in wins else "keep current（未勝出，不套用）"
             print(f"\n---- {horizon}：{verdict} ----")
             _print_diff(current_market[horizon], trained_all[horizon])
+        print(f"\n註：長期（long）不在可訓練範圍（{backtest.TRAINABLE_HORIZONS} 之外），"
+              "權重一律維持手調，不受任何訓練影響，故不出現在上表。")
 
     if not wins:
-        print(f"\n以上皆未在樣本外贏過 {args.market.upper()} 現行權重 → 無可套用的變更。")
+        print(f"\n以上皆未在樣本外穩定贏過 {args.market.upper()} 目前實際在用的權重"
+              " → 無可套用的變更。（keep current 是正常結果，代表現行權重已經夠好。）")
         return
 
     if args.apply:
