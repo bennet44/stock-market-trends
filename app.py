@@ -1703,9 +1703,21 @@ def _render_buy_sell_section(
     _PLAIN_COLS = ["Sharpe Ratio", "Sortino", "估值(1/預估PE)", "新聞情緒", "基本面", "技術面", "籌碼",
                    "配息穩定性", "RSI (14)", "綜合評分"]
     _PRICE_COLS = ["建議買入價", "建議賣出價"]
+    # 這份清單同時決定「欄位順序」與「要不要顯示」——不在清單裡的欄位會被
+    # 下方的 reindex 丟掉。
     _COL_ORDER = ["建議", "綜合評分", "殖利率%", "填息率", "期間報酬率", "技術面", "趨勢(價格/均線)", "Sharpe Ratio",
                   "Sortino", "估值(1/預估PE)", "基本面", "籌碼", "配息穩定性", "新聞情緒", "RSI (14)",
                   "建議買入價", "建議賣出價", "獲利%", "預測準確機率", "原因說明", "備註"]
+    # 存股區改用存股族的視角精簡欄位：只留「領多少、領得穩不穩、領完補不補
+    # 得回來、公司撐不撐得住、現在貴不貴、什麼價位進場」。技術面／籌碼／
+    # 新聞情緒／RSI／Sortino 這些短線或偏技術的欄位對長期領息判斷幫助有限，
+    # 擺著只會稀釋真正該看的欄位。注意這只影響**顯示**，綜合評分仍由
+    # FACTOR_WEIGHTS_HOLDING 的完整因子（含 Sortino）計算。
+    _HOLDING_COL_ORDER = ["建議", "綜合評分", "殖利率%", "配息頻率", "配息穩定性", "填息率",
+                          "基本面", "估值(1/預估PE)",
+                          "建議買入價", "建議賣出價", "獲利%", "原因說明", "備註"]
+    _is_holding_view = weight_table is recommend.FACTOR_WEIGHTS_HOLDING
+    _active_col_order = _HOLDING_COL_ORDER if _is_holding_view else _COL_ORDER
 
     def _format_reco(df: pd.DataFrame) -> pd.DataFrame:
         fmt = df.copy()
@@ -1717,6 +1729,12 @@ def _render_buy_sell_section(
 
     def _column_config(df: pd.DataFrame) -> dict:
         config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表預測準確機率越高。")}
+        if "配息頻率" in df:
+            config["配息頻率"] = st.column_config.TextColumn(
+                "配息頻率", width="small",
+                help="近兩年實際配息次數推算（月配／季配／半年配／年配）；"
+                     "「不定期」代表次數不符合標準頻率，「—」代表查無配息紀錄。",
+            )
         # 獲利% and 預測準確機率 are already stored as percentages (not fractions),
         # so they only get the %% format, not the *100 in _format_reco.
         for col in _PCT_COLS + ["獲利%", "預測準確機率"]:
@@ -1747,7 +1765,7 @@ def _render_buy_sell_section(
     merged = pd.concat([_format_reco(buy_u), _format_reco(sell_u)])
     if "備註" in merged.columns:
         merged["備註"] = merged["備註"].fillna("")
-    merged = merged.reindex(columns=[c for c in _COL_ORDER if c in merged.columns])
+    merged = merged.reindex(columns=[c for c in _active_col_order if c in merged.columns])
     _sides = ["buy"] * len(buy_u) + ["sell"] * len(sell_u)
     _future = merged["預測準確機率"].tolist() if "預測準確機率" in merged else [None] * len(merged)
     # Min–max normalize 預測準確機率 across the table so the green/red gradient
@@ -1802,10 +1820,15 @@ with tab_stock_hold:
     st.caption(
         "存股區定位為**現金流（領息）**，與買賣建議（賺資本利得）採不同公式：配息三訊號合計權重最高——"
         "**殖利率（領多少）、配息穩定性（領得穩）、填息率（除息後60交易日內回補缺口的比例，貼息＝把本金"
-        "配還給你，直接扣分）**；風險調整報酬改用 **Sortino（只懲罰下跌波動）** 取代 Sharpe；"
-        "**基本面（營收/盈餘成長、ROE、淨利率）**維持高權重——配息的可持續性來自獲利；期間報酬率/技術面/"
-        "籌碼/新聞情緒等短線訊號壓到接近零。「統計期間」與「持有天數」也只保留中期／長期選項，"
-        "定位為長期存股／逢低布局參考，而非短線進出。"
+        # 注意：粗體的 ** 要緊鄰標點，不能直接接在中文字後面（例如「因此**基本面」
+        # 不會被解析成粗體，會把星號原樣印出來）。
+        "配還給你，直接扣分）**。配息的可持續性來自獲利，"
+        "**基本面（營收/盈餘成長、ROE、淨利率）**，同樣維持高權重；"
+        "期間報酬率/技術面/籌碼/新聞情緒等短線訊號壓到接近零。「統計期間」與「持有天數」"
+        "也只保留中期／長期選項，定位為長期存股／逢低布局參考，而非短線進出。\n\n"
+        "下表已依存股視角精簡欄位，只保留「領多少（殖利率、配息頻率）、領得穩不穩（配息穩定性）、"
+        "領完補不補得回來（填息率）、公司撐不撐得住（基本面）、現在貴不貴（估值）、什麼價位進場」。"
+        "技術面／籌碼／新聞情緒／RSI／Sortino 等短線或偏技術的欄位不再列出（綜合評分仍照完整公式計算）。"
     )
     col_div_chk, col_div_yield_n, col_div_fill_n = st.columns([2, 1, 1])
     with col_div_chk:

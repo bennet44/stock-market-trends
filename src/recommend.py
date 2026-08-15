@@ -325,6 +325,30 @@ def _trailing_dividend_yield(dividends: pd.Series, asof, price: float) -> float:
     return float(ttm.sum()) / float(price)
 
 
+def dividend_frequency(dividends: pd.Series) -> str:
+    """配息頻率 label from the trailing 24 months of payouts — 存股族選股時
+    的基本條件之一（月配/季配的現金流節奏差很多）。
+
+    Counts payouts over 2 years and halves it, so a stock that just switched
+    cadence, or whose payment drifted across a year boundary, doesn't get
+    mislabelled by a single unlucky 12-month window. Returns "—" when there
+    is no payout history (non-payer), "不定期" when the count doesn't match
+    a standard cadence.
+    """
+    if dividends is None or dividends.empty:
+        return "—"
+    idx = dividends.index
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    cutoff = pd.Timestamp.now() - pd.DateOffset(months=24)
+    recent = pd.Series(dividends.values, index=idx)
+    recent = recent[(recent.index >= cutoff) & (recent.values > 0)]
+    if recent.empty:
+        return "—"
+    per_year = round(len(recent) / 2)
+    return {1: "年配", 2: "半年配", 4: "季配", 12: "月配"}.get(per_year, "不定期")
+
+
 def _dividend_stability(dividends: pd.Series) -> float:
     """配息穩定性 for 存股 ranking: blends payout continuity (consecutive
     trailing years actually paid) with payout consistency (low year-to-year
@@ -591,6 +615,8 @@ def build_recommendation_table(
             # displayed directly as a percentage (raw fraction here).
             "_yield": div_yield,
             "殖利率%": div_yield,
+            # 顯示用（非評分因子）：存股族看現金流節奏，月配/季配差很多。
+            "配息頻率": dividend_frequency(divs),
             # ETFs have no company fundamentals (revenueGrowth/ROE/etc.), so
             # 基本面 is structurally unscorable for them, not just "missing
             # data" for one ticker — its weight is reallocated to the other
