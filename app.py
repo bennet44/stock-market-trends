@@ -14,6 +14,7 @@ from src import fcn
 from src import fcn_backtest
 from src import fcn_records
 from src import fcn_screen
+from src import market_calendar
 from src import news
 from src import price_fetch
 from src import recommend
@@ -563,8 +564,74 @@ with tab_news:
         "重要決策請點開原文確認）。快取 30 分鐘～6 小時自動更新。"
     )
 
-    st.subheader("📅 美國本週重要紀事")
-    st.caption("本週聯準會動態、CPI／就業數據、財報週等市場行事曆相關頭條。")
+    _wk_start, _wk_end = market_calendar.week_range()
+    st.subheader(
+        f"📅 美國本週重要紀事（{_wk_start.month}/{_wk_start.day} ~ "
+        f"{_wk_end.month}/{_wk_end.day}）"
+    )
+
+    _WEEKDAY_ZH = ["一", "二", "三", "四", "五", "六", "日"]
+
+    def _fmt_day(d: dt.date) -> str:
+        return f"{d.month}/{d.day}({_WEEKDAY_ZH[d.weekday()]})"
+
+    st.markdown("##### 🗓️ 本週行事曆")
+    _cal_events = market_calendar.get_week_events(_wk_start, _wk_end)
+    if _cal_events:
+        st.dataframe(
+            pd.DataFrame([{
+                "日期": _fmt_day(e["date"]),
+                "類型": e["category"],
+                "事件": e["name"],
+                "說明": e["note"],
+            } for e in _cal_events]),
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.caption("本週無行事曆事件。")
+    if market_calendar.macro_schedule_ready(_wk_start.year):
+        st.caption(
+            "**官方確定日**：CPI、PPI、FOMC（2026 全年）／PCE、零售銷售"
+            "（已確認至 8 月，之後待官方公布）／美股休市與提早收盤。　"
+            "**依慣例推算**：非農（每月第一個週五）、ADP（非農前週三）、"
+            "ISM 製造業／服務業（每月第 1／第 3 個營業日）、初領失業金（每週四）、"
+            "消費者信心（每月最後週二）、FOMC 會議紀要（決策後三週）——"
+            "官方偶有調整，重要交易請以官方公告為準。　"
+            "原始時程：[BLS](https://www.bls.gov/schedule/news_release/)、"
+            "[BEA](https://www.bea.gov/news/schedule)、"
+            "[Fed](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)、"
+            "[NYSE](https://www.nyse.com/markets/hours-calendars)。"
+        )
+    else:
+        st.caption(
+            f"⚠ {_wk_start.year} 年的總經數據時程尚未設定，上表僅含可推算的事件"
+            "（四巫日／選擇權到期／初領失業金／非農）。CPI、PPI、PCE、FOMC "
+            "等官方確定發布日請見 "
+            "[BLS](https://www.bls.gov/schedule/news_release/)、"
+            "[BEA](https://www.bea.gov/news/schedule)、"
+            "[Fed](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)。"
+        )
+
+    st.markdown("##### 💰 本週財報（依市值前 10 大）")
+    with st.spinner("正在載入本週財報行事曆…"):
+        _earnings = market_calendar.get_earnings_week(_wk_start, _wk_end, 10)
+    if _earnings:
+        st.dataframe(
+            pd.DataFrame([{
+                "日期": _fmt_day(r["date"]),
+                "時段": r["time_label"],
+                "代號": r["symbol"],
+                "公司": r["name"],
+                "市值": f"${r['market_cap'] / 1e9:,.1f}B",
+                "預估EPS": r["eps_forecast"] or "—",
+            } for r in _earnings]),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption("資料來源：Nasdaq 財報行事曆。「時段」為盤前／盤後公布；預估 EPS 為分析師共識值。")
+    else:
+        st.caption("目前無法取得本週財報行事曆（來源無資料或網路異常）。")
+
+    st.markdown("##### 📰 相關頭條")
     with st.spinner("正在載入本週紀事…"):
         _week_items = news.get_us_week_ahead()
     if _week_items:
