@@ -589,20 +589,9 @@ with tab_news:
         )
     else:
         st.caption("本週無行事曆事件。")
-    if market_calendar.macro_schedule_ready(_wk_start.year):
-        st.caption(
-            "**官方確定日**：CPI、PPI、FOMC（2026 全年）／PCE、零售銷售"
-            "（已確認至 8 月，之後待官方公布）／美股休市與提早收盤。　"
-            "**依慣例推算**：非農（每月第一個週五）、ADP（非農前週三）、"
-            "ISM 製造業／服務業（每月第 1／第 3 個營業日）、初領失業金（每週四）、"
-            "消費者信心（每月最後週二）、FOMC 會議紀要（決策後三週）——"
-            "官方偶有調整，重要交易請以官方公告為準。　"
-            "原始時程：[BLS](https://www.bls.gov/schedule/news_release/)、"
-            "[BEA](https://www.bea.gov/news/schedule)、"
-            "[Fed](https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm)、"
-            "[NYSE](https://www.nyse.com/markets/hours-calendars)。"
-        )
-    else:
+    # 時程正常時不加註解（畫面保持乾淨）；只有該年度時程尚未建檔時才提示，
+    # 否則使用者會把「我們還沒補資料」誤讀成「那週真的沒有這些數據」。
+    if not market_calendar.macro_schedule_ready(_wk_start.year):
         st.caption(
             f"⚠ {_wk_start.year} 年的總經數據時程尚未設定，上表僅含可推算的事件"
             "（四巫日／選擇權到期／初領失業金／非農）。CPI、PPI、PCE、FOMC "
