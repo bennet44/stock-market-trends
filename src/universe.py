@@ -427,6 +427,109 @@ def get_twse_tickers() -> list[str]:
     return combined if combined else sorted(set(_TW_STOCK_TICKERS) | set(_TW_ETF_TICKERS))
 
 
+# ---------- 債券 ETF ----------
+# 台股債券 ETF 的代號慣例是末碼 B（00679B、00937B…）。這類代號被
+# _is_common_stock 的「剛好 4 位數字」規則擋在成交量／市值榜之外，而
+# _TW_ETF_CODES 白名單裡也只有股票型 ETF，所以債券完全進不了掃描池——
+# 這是副作用而非刻意排除，需要一個獨立入口把它們找回來。
+def _is_tw_bond_etf_code(code: str) -> bool:
+    return bool(code) and code.upper().endswith("B") and code[:-1].isdigit()
+
+
+# 美股債券 ETF 名單穩定（不像台股每年新發一堆），直接列出並附上
+# (天期, 類別) — 這兩項是債券真正該看的維度，而 yfinance 的 info 拿不到。
+_US_BOND_ETFS: dict[str, tuple[str, str]] = {
+    "TLT": ("長天期", "美國公債"),
+    "IEF": ("中天期", "美國公債"),
+    "SHY": ("短天期", "美國公債"),
+    "SHV": ("短天期", "美國公債"),
+    "GOVT": ("綜合", "美國公債"),
+    "AGG": ("綜合", "投資等級"),
+    "BND": ("綜合", "投資等級"),
+    "LQD": ("中天期", "投資級公司債"),
+    "VCIT": ("中天期", "投資級公司債"),
+    "VCSH": ("短天期", "投資級公司債"),
+    "HYG": ("中天期", "非投資等級"),
+    "JNK": ("中天期", "非投資等級"),
+    "TIP": ("中天期", "抗通膨債"),
+    "EMB": ("中天期", "新興市場債"),
+}
+
+# 台股債券 ETF 的天期／類別由中文名稱關鍵字推斷（名稱本身就寫著
+# 「20年」「7-10」「1-3」）。推不出來就回「—」，不亂猜。
+_TW_BOND_TENOR_KEYWORDS = [
+    (("20年", "20+", "15+", "25年", "30年", "10Y+", "長天期"), "長天期"),
+    (("7-10", "5-10", "10年", "7年", "中天期"), "中天期"),
+    (("0-1", "1-3", "0-3", "0-5", "1-5", "3年", "短期", "短天期"), "短天期"),
+]
+_TW_BOND_CLASS_KEYWORDS = [
+    # 非投等要排在投等前面：「非投等債」同時含「投等」，順序反了會歸錯類。
+    # 「非投債」是常見簡寫（第一金優選非投債、玉山嚴選非投債）。
+    # 「優選／嚴選」是行銷詞不是信用等級——第一金優選「非投債」正是非投等，
+    # 曾因把「優選」當投資級關鍵字而誤判，故不列入。
+    (("非投等", "非投資等級", "非投債", "高收益"), "非投資等級"),
+    (("投等", "投資級", "投資等級", "A級"), "投資等級"),
+    (("新興",), "新興市場債"),
+    (("公債", "美債", "政府"), "公債"),
+    (("金融債",), "金融債"),
+    (("公司債",), "公司債"),
+]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tw_bond_etf_tickers(n: int = 20) -> list[str]:
+    """流動性最好的 n 檔台股債券 ETF（代號末碼 B）。
+
+    上櫃走 TPEx quotes feed（有 TradingShares 可排序流動性），上市補
+    ISIN ETF 清單（該來源沒有成交量，排在上櫃之後）。回傳含 Yahoo 後綴。
+    """
+    picked: list[str] = []
+    try:
+        rows = _fetch_json(_TPEX_QUOTES_URL)
+        bonds = [r for r in rows if _is_tw_bond_etf_code(r.get("SecuritiesCompanyCode", ""))]
+
+        def _vol(r: dict) -> float:
+            try:
+                return float(str(r.get("TradingShares", "0")).replace(",", "") or 0)
+            except ValueError:
+                return 0.0
+
+        bonds.sort(key=_vol, reverse=True)
+        picked = [f"{r['SecuritiesCompanyCode']}.TWO" for r in bonds[:n]]
+    except Exception:
+        pass
+    if len(picked) < n:
+        listed = [f"{c}.TW" for c, _ in (_fetch_twse_etf_rows() or [])
+                  if _is_tw_bond_etf_code(c)]
+        picked += [t for t in listed if t not in picked][: n - len(picked)]
+    return picked
+
+
+def get_us_bond_etf_tickers() -> list[str]:
+    """美股主要債券 ETF（公債／投等／非投等／抗通膨／新興市場，涵蓋短中長天期）。"""
+    return sorted(_US_BOND_ETFS)
+
+
+def bond_profile(ticker: str) -> tuple[str, str] | None:
+    """(天期, 類別) for a bond ETF, or None when `ticker` isn't one.
+
+    美股查固定名單；台股先確認代號末碼為 B，再從中文名稱關鍵字推斷——
+    名稱本身就帶天期資訊（「元大美債20年」「富邦美債1-3」）。任一維度
+    推不出來就回「—」，不用猜的填。
+    """
+    bare = ticker.split(".")[0].upper()
+    if bare in _US_BOND_ETFS:
+        return _US_BOND_ETFS[bare]
+    if not _is_tw_bond_etf_code(bare):
+        return None
+    name = get_tw_company_name(ticker) or ""
+    tenor = next((label for keys, label in _TW_BOND_TENOR_KEYWORDS
+                  if any(k in name for k in keys)), "—")
+    klass = next((label for keys, label in _TW_BOND_CLASS_KEYWORDS
+                  if any(k in name for k in keys)), "—")
+    return tenor, klass
+
+
 def normalize_tw_ticker(raw: str) -> str:
     """Append the Yahoo Finance ".TW" suffix to a bare Taiwan stock/ETF code.
 

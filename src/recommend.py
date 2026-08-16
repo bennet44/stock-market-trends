@@ -16,6 +16,7 @@ from . import data_loader as dl
 from . import news as news_mod
 from . import risk as risk_mod
 from . import technical as ta
+from . import universe as universe_mod  # 債券 ETF 判定；universe 不反向匯入本模組
 
 # Composite-score factor weights, switched by the chosen horizon: a 1-day scan
 # and a 5-year scan shouldn't value the same things. Short windows lean on
@@ -575,10 +576,20 @@ def build_recommendation_table(
         # outstanding; US = Chaikin Money Flow over the window.
         chip = chip_signal(t, high, low, close, volume, inst_net)
 
+        # 債券 ETF：標出天期／類別，並讓概念不適用的欄位留白而不是給數字。
+        _bond = universe_mod.bond_profile(t)
+        if _bond:
+            _tenor, _klass = _bond
+            asset_type = f"債券ETF（{_klass}" + (f"・{_tenor}）" if _tenor != "—" else "）")
+        else:
+            asset_type = "股票ETF" if is_etf else "個股"
+
         # 填息率 factor (存股區 weights only): needs its own 2y price fetch,
         # so only pay for it when the weight table actually scores it.
+        # 債券 ETF 跳過：填息是「除息後把價格缺口補回來」的股票概念，債券
+        # ETF 的價格主要由利率驅動，算出來的數字看似有意義但會誤導。
         fill_rate = np.nan
-        if "填息率" in weights:
+        if "填息率" in weights and not _bond:
             _, _fr = _dividend_yield_and_fill_rate(t)
             fill_rate = _fr if _fr is not None else np.nan
 
@@ -617,6 +628,9 @@ def build_recommendation_table(
             "殖利率%": div_yield,
             # 顯示用（非評分因子）：存股族看現金流節奏，月配/季配差很多。
             "配息頻率": dividend_frequency(divs),
+            # 顯示用：個股／股票ETF／債券ETF（含信用類別與天期），讓使用者
+            # 一眼看出這列是不是債券——評分模型是以股票校準的。
+            "類型": asset_type,
             # ETFs have no company fundamentals (revenueGrowth/ROE/etc.), so
             # 基本面 is structurally unscorable for them, not just "missing
             # data" for one ticker — its weight is reallocated to the other

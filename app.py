@@ -1430,7 +1430,7 @@ def _render_buy_sell_section(
     allow_zhu_gate: bool, header: str, show_formula_caption: bool = True,
     weight_table: dict | None = None, dividend_screen: bool = False,
     dividend_top_yield: int = 50, dividend_top_fill: int = 30,
-    require_confirm: bool = False,
+    require_confirm: bool = False, include_bonds: bool = False,
 ) -> None:
     """Shared body for 買賣建議 and 存股區: both scan the same universe with
     a cross-sectional multi-factor composite, but with deliberately different
@@ -1549,7 +1549,7 @@ def _render_buy_sell_section(
         # inputs — changing any of them re-closes the gate so the scan only
         # re-runs after a fresh 確定 (not live on every edit).
         _sig = (period_label, top_n, hold_label, aggr_label3,
-                dividend_screen, dividend_top_yield, dividend_top_fill)
+                dividend_screen, dividend_top_yield, dividend_top_fill, include_bonds)
         if not _confirm_gate(
             _gate_key, _sig, _pressed,
             missing=None in (period_label, hold_label, aggr_label3),
@@ -1639,6 +1639,12 @@ def _render_buy_sell_section(
             set(universe.get_top_volume_tickers(30)) | set(universe.get_sp500_tickers())
             | set(universe.get_nasdaq100_tickers()) | set(universe.get_dow_tickers())
         )
+    # 債券 ETF 平常不在掃描池裡（台股代號末碼 B 被「4 位數字」規則擋掉、
+    # 美股池是 S&P500∪高量股票清單），存股區可選擇性納入。
+    if include_bonds:
+        _bonds = (universe.get_tw_bond_etf_tickers(20) if is_tw
+                  else universe.get_us_bond_etf_tickers())
+        reco_universe = sorted(set(reco_universe) | set(_bonds))
 
     # 填息率 only exists for tickers that passed the screen — kept here (not
     # as a separate table) so it merges straight into the same buy/sell
@@ -1713,7 +1719,7 @@ def _render_buy_sell_section(
     # 新聞情緒／RSI／Sortino 這些短線或偏技術的欄位對長期領息判斷幫助有限，
     # 擺著只會稀釋真正該看的欄位。注意這只影響**顯示**，綜合評分仍由
     # FACTOR_WEIGHTS_HOLDING 的完整因子（含 Sortino）計算。
-    _HOLDING_COL_ORDER = ["建議", "綜合評分", "殖利率%", "配息頻率", "配息穩定性", "填息率",
+    _HOLDING_COL_ORDER = ["建議", "類型", "綜合評分", "殖利率%", "配息頻率", "配息穩定性", "填息率",
                           "基本面", "估值(1/預估PE)",
                           "建議買入價", "建議賣出價", "獲利%", "原因說明", "備註"]
     _is_holding_view = weight_table is recommend.FACTOR_WEIGHTS_HOLDING
@@ -1729,6 +1735,12 @@ def _render_buy_sell_section(
 
     def _column_config(df: pd.DataFrame) -> dict:
         config = {"建議": st.column_config.TextColumn("建議", width="small", help="綠＝建議買入、紅＝建議賣出；顏色越深代表預測準確機率越高。")}
+        if "類型" in df:
+            config["類型"] = st.column_config.TextColumn(
+                "類型", width="small",
+                help="個股／股票ETF／債券ETF（括號內為信用類別與天期）。"
+                     "綜合評分是以股票校準的，債券列僅供對照，不宜與股票直接比名次。",
+            )
         if "配息頻率" in df:
             config["配息頻率"] = st.column_config.TextColumn(
                 "配息頻率", width="small",
@@ -1848,6 +1860,23 @@ with tab_stock_hold:
             "填息率前N高", min_value=1, max_value=_div_top_yield, value=min(30, _div_top_yield), step=1,
             key=f"div_top_fill_{'tw' if is_tw else 'us'}", disabled=not _dividend_screen_on,
         ))
+    # 預設關閉：開啟會把債券混進以股票校準的排名裡，屬於使用者要主動選擇的
+    # 取捨，不該預設替他決定（也避免既有排名無預警變動）。
+    _include_bonds = st.checkbox(
+        "納入債券 ETF（預設不納入）",
+        key=f"include_bonds_{'tw' if is_tw else 'us'}",
+        help="台股取成交量前 20 大的債券 ETF（代號末碼 B），美股取主要公債／投等／"
+             "非投等／抗通膨／新興市場債 ETF。這些平常不在掃描池內。",
+    )
+    if _include_bonds:
+        st.warning(
+            "**債券列僅供對照，別直接跟股票比名次。** 綜合評分是以股票校準的："
+            "債券 ETF 沒有基本面與本益比（該欄會留白），填息率也不適用（債券價格由"
+            "利率驅動，不是除息填息的邏輯，故不計算）。更重要的是，本模型**未涵蓋"
+            "存續期間與到期殖利率**——而這才是債券真正的風險與報酬來源。"
+            "長天期債券若因升息大跌，在這裡會呈現「殖利率變高、價格便宜」，"
+            "但那是利率風險，不是便宜。"
+        )
     _render_buy_sell_section(
         is_tw, currency, "tab_hold",
         _HOLDING_PERIOD_OPTIONS, "1年",
@@ -1856,6 +1885,7 @@ with tab_stock_hold:
         show_formula_caption=False, weight_table=recommend.FACTOR_WEIGHTS_HOLDING,
         dividend_top_yield=_div_top_yield, dividend_top_fill=_div_top_fill,
         dividend_screen=_dividend_screen_on, require_confirm=True,
+        include_bonds=_include_bonds,
     )
 
 # ---------- Tab 5: FCN risk assessment ----------
