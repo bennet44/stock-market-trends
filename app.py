@@ -657,6 +657,27 @@ with tab_news:
         st.info("目前無法取得本週紀事（來源無資料或網路異常）。")
 
     st.divider()
+    st.subheader(
+        f"🇹🇼 台股本週重要紀事（{_wk_start.month}/{_wk_start.day} ~ "
+        f"{_wk_end.month}/{_wk_end.day}）"
+    )
+    _tw_events = market_calendar.get_tw_week_events(_wk_start, _wk_end)
+    if _tw_events:
+        st.dataframe(
+            pd.DataFrame([{
+                "日期": _fmt_day(e["date"]),
+                "類型": e["category"],
+                "事件": e["name"],
+                "說明": e["note"],
+            } for e in _tw_events]),
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.caption("本週無台股行事曆事件。")
+    if not market_calendar.get_tw_market_calendar(_wk_start.year):
+        st.caption("⚠ 目前無法取得證交所開休市行事曆，上表僅含可推算的台指期結算與月營收截止日。")
+
+    st.divider()
     st.subheader("📰 影響今日美股的新聞")
     st.caption("近兩天（涵蓋美台時差）影響大盤的頭條，已翻譯為中文並附原文。")
     with st.spinner("正在載入並翻譯今日美股新聞…"):

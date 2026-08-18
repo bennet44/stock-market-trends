@@ -16,6 +16,7 @@ from __future__ import annotations
 import calendar as _calendar
 import datetime as dt
 import json
+import ssl
 import urllib.request
 
 import streamlit as st
@@ -362,3 +363,115 @@ def week_range(today: dt.date | None = None) -> tuple[dt.date, dt.date]:
     else:
         monday = today - dt.timedelta(days=today.weekday())
     return monday, monday + dt.timedelta(days=4)
+
+
+# ---------- 台股行事曆 ----------
+
+# 證交所官方「市場開休市日期」——含國定假日休市、農曆年封關/開紅盤日。
+# queryYear 用民國年（西元−1911）。這支有官方資料可抓，所以台股休市不像
+# 美股總經時程那樣需要人工維護內建表。
+_TWSE_HOLIDAY_URL = (
+    "https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule"
+    "?response=json&queryYear={roc}"
+)
+# 與 universe.py 同樣的理由：部分 Windows 環境對證交所憑證鏈驗證失敗，
+# 這是唯讀的公開市場資料，沒有敏感內容。
+_TW_SSL_CTX = ssl.create_default_context()
+_TW_SSL_CTX.check_hostname = False
+_TW_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+# 名稱含這些字樣的是「交易日提示」（封關前最後一天、年後開紅盤），不是休市。
+_TW_TRADING_DAY_MARKERS = ("開始交易", "最後交易")
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_tw_market_calendar(year: int) -> dict[str, tuple[str, str]]:
+    """證交所公告的該年度開休市日期：{ISO 日期: (名稱, 類別)}。
+
+    類別為「休市」或「交易日」——後者是農曆年封關/開紅盤這種**有交易**的
+    提示日，不能當成休市處理（例如 2026-02-11 是春節前最後交易日）。
+    任何失敗回 {}，呼叫端只會少列事件、不會壞掉。
+    """
+    try:
+        url = _TWSE_HOLIDAY_URL.format(roc=year - 1911)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (stock-market-trends-app)"})
+        payload = json.loads(urllib.request.urlopen(req, timeout=15, context=_TW_SSL_CTX).read())
+    except Exception:
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for row in payload.get("data") or []:
+        if len(row) < 2:
+            continue
+        day, name = str(row[0]).strip(), str(row[1]).strip()
+        kind = "交易日" if any(m in name for m in _TW_TRADING_DAY_MARKERS) else "休市"
+        out[day] = (name, kind)
+    return out
+
+
+def is_tw_market_holiday(d: dt.date) -> bool:
+    """該日台股是否休市（不含一般週末）。"""
+    entry = get_tw_market_calendar(d.year).get(d.isoformat())
+    return bool(entry) and entry[1] == "休市"
+
+
+def _is_tw_trading_day(d: dt.date) -> bool:
+    return d.weekday() < _calendar.SATURDAY and not is_tw_market_holiday(d)
+
+
+def taiex_settlement_date(year: int, month: int) -> dt.date:
+    """台指期（月契約）結算日：該月第三個星期三，遇休市順延至下一個交易日。
+
+    結算日當天現貨常出現結算相關的買賣壓與尾盤波動，是台股月度行事曆上最
+    需要注意的一天，故單獨列出。
+    """
+    wednesdays = [
+        dt.date(year, month, d)
+        for d in _calendar.Calendar().itermonthdays(year, month)
+        if d and dt.date(year, month, d).weekday() == _calendar.WEDNESDAY
+    ]
+    d = wednesdays[2]
+    while not _is_tw_trading_day(d):
+        d += dt.timedelta(days=1)
+    return d
+
+
+def _monthly_revenue_deadline(year: int, month: int) -> dt.date:
+    """月營收公布截止日：依規定為每月 10 日前公布上月營收，遇假日順延。
+    營收是台股最頻繁的基本面事件，截止日前後常有個股表態。"""
+    d = dt.date(year, month, 10)
+    while not _is_tw_trading_day(d):
+        d += dt.timedelta(days=1)
+    return d
+
+
+def get_tw_week_events(start: dt.date, end: dt.date) -> list[dict]:
+    """`start`~`end`（含）之間的台股行事曆事件，格式同 get_week_events。"""
+    events: list[dict] = []
+    cal = get_tw_market_calendar(start.year)
+    if end.year != start.year:  # 跨年度的那一週
+        cal = {**cal, **get_tw_market_calendar(end.year)}
+
+    day = start
+    while day <= end:
+        entry = cal.get(day.isoformat())
+        if entry:
+            name, kind = entry
+            events.append({
+                "date": day, "category": "市場結構",
+                "name": f"台股休市（{name}）" if kind == "休市" else name,
+                "note": "當日不交易" if kind == "休市" else "有交易，農曆年前後的關鍵交易日",
+            })
+        if day == taiex_settlement_date(day.year, day.month):
+            events.append({
+                "date": day, "category": "市場結構", "name": "台指期結算日",
+                "note": "月契約結算（第三個週三，遇休市順延），現貨尾盤波動常放大",
+            })
+        if day == _monthly_revenue_deadline(day.year, day.month):
+            events.append({
+                "date": day, "category": "基本面", "name": "上市櫃月營收公布截止",
+                "note": "依規定每月 10 日前公布上月營收（遇假日順延）",
+            })
+        day += dt.timedelta(days=1)
+
+    events.sort(key=lambda e: (e["date"], e["category"], e["name"]))
+    return events
